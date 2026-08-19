@@ -9,6 +9,16 @@ Building a UXP plugin for Adobe Premiere Pro 2026 that lets an editor select one
 The full build plan (setup, spikes, and Phase 1 breakdown) was approved and lives at:
 `/Users/anmolpreet/.claude/plans/users-anmolpreet-downloads-auphonic-pre-nested-mccarthy.md`
 
+## Version control
+
+The project is on GitHub, connected and pushed:
+**https://github.com/anmol-4-real/auphonic-premiere-plugin** (private repo)
+
+- `gh` (GitHub CLI) is installed at `~/.local/bin/gh` (not on PATH by default — run `export PATH="$HOME/.local/bin:$PATH"` first, or use the full path). Already authenticated as `anmol-4-real` via browser login; git is configured to use `gh` as its credential helper (`gh auth setup-git`), so `git push`/`git pull` work without any further login.
+- Local git identity for this repo only (not global): name `Anmolpreet`, email `anmolpreet@hackerrank.com` — change with `git config user.name`/`user.email` if a different display name is wanted.
+- `.gitignore` excludes: `reference/` (Adobe's sample repo — re-clone with `git clone https://github.com/AdobeDocs/uxp-premiere-pro-samples.git reference/uxp-premiere-pro-samples` if needed again), `Test Exports/` (generated test audio, not source), `.claude/` (local tool config), `.DS_Store`.
+- One commit so far: the spike plugin + this handoff doc. **Commit the real Phase 1 plugin as it's built** — don't let it pile up uncommitted; the user has not been asked whether they want commits automatic or per-milestone, so ask before the first Phase 1 commit whether they want to be prompted each time or have commits made proactively as features land.
+
 ## Current status: all verification is done. Time to build the real plugin.
 
 Every required spike from the plan has passed, with live evidence (not guesses):
