@@ -1,0 +1,18 @@
+# OS junk
+.DS_Store
+**/.DS_Store
+
+# Local Claude Code tooling config -- not part of the plugin itself
+.claude/
+
+# Third-party reference clone (Adobe's own public sample repo, kept locally
+# for reference but not part of this project's own history -- has its own
+# git history/license). Re-clone with:
+#   git clone https://github.com/AdobeDocs/uxp-premiere-pro-samples.git reference/uxp-premiere-pro-samples
+reference/
+
+# Test output audio files -- generated artifacts, not source
+Test Exports/
+
+# Node, if it's ever added later
+node_modules/

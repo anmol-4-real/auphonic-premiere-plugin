@@ -1,0 +1,153 @@
+<!-- Throwaway spike panel. Verifies the two "Assumed" rows in PRD section 10
+     before any Phase 1 code is written. Delete this whole folder once both pass. -->
+<style>
+  html, body {
+    height: 100%;
+    overflow-y: auto;
+  }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    font-size: 12px;
+    color: #e8e8e8;
+    background: #262626;
+    margin: 0;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  h2 {
+    font-size: 13px;
+    margin: 0 0 4px;
+    color: #fff;
+  }
+  .spike {
+    border: 1px solid #3d3d3d;
+    border-radius: 4px;
+    padding: 10px;
+    margin-bottom: 14px;
+    background: #2e2e2e;
+  }
+  .hint {
+    color: #9a9a9a;
+    font-size: 11px;
+    margin: 0 0 8px;
+    line-height: 1.45;
+  }
+  label {
+    display: block;
+    margin: 8px 0 3px;
+    font-size: 11px;
+    color: #c4c4c4;
+  }
+  input, select {
+    width: 100%;
+    box-sizing: border-box;
+    background: #1d1d1d;
+    color: #e8e8e8;
+    border: 1px solid #4a4a4a;
+    border-radius: 3px;
+    padding: 5px 6px;
+    font-size: 11px;
+  }
+  button {
+    margin-top: 10px;
+    background: #2680eb;
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    padding: 7px 14px;
+    font-size: 12px;
+  }
+  button:disabled { background: #4a4a4a; color: #8a8a8a; }
+  .log {
+    margin-top: 10px;
+    padding: 8px;
+    background: #1a1a1a;
+    border-radius: 3px;
+    font-family: Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: 20px;
+    max-height: 480px;
+    overflow-y: auto;
+  }
+  .ok   { color: #4caf7d; }
+  .bad  { color: #ec5b56; }
+  .warn { color: #e8b339; }
+  .dim  { color: #8a8a8a; }
+</style>
+
+<div class="spike">
+  <h2>Spike A &mdash; Auphonic networking</h2>
+  <p class="hint">
+    Can this plugin reach Auphonic's servers at all? Paste your API key and click
+    Test. <b>Pass =</b> your real credit balance appears.
+  </p>
+  <label for="apiKey">Auphonic API key</label>
+  <input id="apiKey" type="password" placeholder="paste your key here" />
+  <button id="btnTestConn">Test Connection</button>
+  <button id="btnPresets">Also List Presets</button>
+  <div class="log" id="logA"><span class="dim">Not run yet.</span></div>
+</div>
+
+<div class="spike">
+  <h2>Spike B &mdash; single-clip audio export</h2>
+  <p class="hint">
+    Can Premiere export just <i>one clip's</i> audio range, instead of the whole
+    timeline? Select exactly one clip on your timeline, then click Export.
+    <b>Pass =</b> the WAV's length matches the clip, not the whole source recording.
+  </p>
+  <label for="presetPath">WAV export preset (.epr)</label>
+  <input id="presetPath" type="text" />
+  <button id="btnInspect">1. Inspect Selection</button>
+  <button id="btnExportSubsequence">2. Export via Subsequence</button>
+  <br/>
+  <button id="btnDebugApi">Debug: What API is actually here?</button>
+  <button id="btnCleanupSubs">Cleanup: Delete leftover _Sub_NN sequences</button>
+  <p class="hint">
+    Exports land in <code>Documents/Awwphonic/Test Exports/</code>, named
+    <code>&lt;clip name&gt; - attempt N.wav</code>.
+  </p>
+  <div class="log" id="logB"><span class="dim">Not run yet.</span></div>
+</div>
+
+<div class="spike">
+  <h2>Spike C &mdash; disable original audio + create a track below</h2>
+  <p class="hint">
+    Two things with zero evidence in Adobe's own sample code: disabling a
+    clip's audio, and creating a new track when none exists below the
+    original. Runs entirely inside a disposable copy, so your real timeline
+    is never touched regardless of the result. Select the same clip as
+    Spike B, then click below.
+  </p>
+  <button id="btnTestDisableTrack">Test disable + track creation</button>
+  <div class="log" id="logC"><span class="dim">Not run yet.</span></div>
+</div>
+
+<div class="spike">
+  <h2>Spike D &mdash; secureStorage round-trip</h2>
+  <p class="hint">
+    Writes a test value with <code>secureStorage.setItem</code>, reads it
+    back, and checks it matches. <b>Pass =</b> "ROUND-TRIP MATCHED."
+  </p>
+  <button id="btnTestSecureStorage">Test secureStorage</button>
+  <div class="log" id="logD"><span class="dim">Not run yet.</span></div>
+</div>
+
+<div class="spike">
+  <h2>Spike E &mdash; full real Auphonic round trip</h2>
+  <p class="hint">
+    Uploads a real WAV file to Auphonic, processes it, and downloads the
+    result. <b>This spends a small amount of real Auphonic credit</b>
+    (minimum 3 minutes billed). Paste a preset UUID from Spike A's
+    "Also List Presets" button below, click Test, then pick a WAV file
+    from <code>Test Exports</code> when prompted.
+  </p>
+  <label for="uploadPresetUuid">Preset UUID (from Spike A)</label>
+  <input id="uploadPresetUuid" type="text" placeholder="paste a preset uuid here" />
+  <button id="btnTestAuphonicUpload">Test full Auphonic round trip</button>
+  <div class="log" id="logE"><span class="dim">Not run yet.</span></div>
+</div>
+
+<script src="main.js"></script>
