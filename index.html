@@ -1,0 +1,46 @@
+<link rel="stylesheet" href="src/ui/styles.css" />
+
+<section class="panel-block">
+  <h2>Auphonic Account</h2>
+  <p class="hint">Paste your Auphonic API key once. It's stored securely on this computer.</p>
+  <label for="apiKeyInput">API key</label>
+  <input id="apiKeyInput" type="password" placeholder="paste your key here" />
+  <button id="saveKeyBtn">Save Key &amp; Connect</button>
+  <button id="changeKeyBtn" class="secondary hidden">Change Key</button>
+  <div class="status-line" id="keyStatus"><span class="dim">Not connected yet.</span></div>
+</section>
+
+<section class="panel-block hidden" id="presetSection">
+  <h2>Preset</h2>
+  <p class="hint">Choose which Auphonic preset to clean audio with.</p>
+  <select id="presetSelect"></select>
+  <div class="status-line" id="presetStatus"></div>
+</section>
+
+<section class="panel-block hidden" id="processSection">
+  <h2>Process Selected Clip</h2>
+  <p class="hint">Select exactly one audio clip on your timeline in Premiere, then click below.</p>
+  <button id="checkSelectionBtn">Check Selected Clip</button>
+  <div class="status-line" id="selectionStatus"><span class="dim">Not checked yet.</span></div>
+
+  <div id="estimateBox" class="hidden">
+    <div class="status-line" id="estimateText"></div>
+    <ul class="warning-list hidden" id="warningList"></ul>
+    <button id="confirmBtn">Confirm &amp; Process</button>
+  </div>
+
+  <div id="progressBox" class="hidden">
+    <div class="status-line" id="progressStatus"></div>
+    <div class="log" id="progressLog"></div>
+  </div>
+</section>
+
+<section class="panel-block hidden" id="cacheSection">
+  <h2>Cache</h2>
+  <button id="revealCacheBtn" class="secondary">Reveal Cache Folder</button>
+  <button id="cleanFailedBtn" class="secondary">Clean Failed Temp Files</button>
+  <button id="cleanCompletedBtn" class="secondary">Delete Completed Input Temp Files</button>
+  <div class="status-line" id="cacheStatus"></div>
+</section>
+
+<script src="src/main.js"></script>

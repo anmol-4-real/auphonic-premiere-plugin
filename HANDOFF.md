@@ -19,7 +19,33 @@ The project is on GitHub, connected and pushed:
 - `.gitignore` excludes: `reference/` (Adobe's sample repo — re-clone with `git clone https://github.com/AdobeDocs/uxp-premiere-pro-samples.git reference/uxp-premiere-pro-samples` if needed again), `Test Exports/` (generated test audio, not source), `.claude/` (local tool config), `.DS_Store`.
 - One commit so far: the spike plugin + this handoff doc. **Commit the real Phase 1 plugin as it's built** — don't let it pile up uncommitted; the user has not been asked whether they want commits automatic or per-milestone, so ask before the first Phase 1 commit whether they want to be prompted each time or have commits made proactively as features land.
 
-## Current status: all verification is done. Time to build the real plugin.
+## Current status (2026-08-19): Phase 1 code is fully written. Not yet live-tested in Premiere.
+
+Every file listed in the plan's section 2 folder structure now exists at the project root: `manifest.json`, `package.json`, `jsconfig.json`, `index.html`, and `src/{main.js, ui/{panel.js, styles.css}, core/{selection,export,auphonicClient,insertion,costEstimate,cache,jobModel,errors}.js, lib/{secureStorage,paths}.js}`. All files pass a JavaScript syntax check (via `osascript -l JavaScript`, since Node isn't installed) but **none of it has been loaded into Premiere/UDT yet** — that's the next session's first job. See "How to load and test Phase 1" below.
+
+**Deliberate scope decisions made while writing this code** (not re-litigate, but worth knowing):
+- No `command` entrypoint in the manifest — only the panel. A command entrypoint invoked from Window > UXP Plugins would have no natural place to show the cost estimate and get explicit confirmation before spending credits, which is a hard PRD requirement. Can be added later if wanted.
+- A selected **video clip is rejected outright** ("Video clips are not supported yet -- select the audio item directly") rather than attempting linked-audio resolution — that resolution is explicitly Phase 2 scope per the PRD.
+- **No collision detection** on the destination track — Phase 1 explicitly excludes it per the plan; `createOverwriteItemAction`/insert will just place the clip, silently replacing whatever's there on an existing track below.
+- Bin creation and label colors are skipped entirely (Phase 3 scope).
+- Multi-selection is rejected with a message rather than silently processing only the first item.
+
+**New facts learned while writing this code (not covered by the spike, so not yet live-confirmed):**
+- **`TickTime.ticksNumber` (a number), not `.ticks`, is the real property** for reading raw tick values off a TickTime object — confirmed by reading Adobe's own sample (`sequence.ts` lines ~392-395, the handles-calculation code), not by live testing. Used in `selection.js` and `panel.js` for the job record's `timelineStartTicks`/`timelineEndTicks` fields.
+- **Media type (audio vs. video) and a track item's real track index are derived the same way Spike C already proved works**: walking `sequence.getAudioTrack(i)`/`getVideoTrack(i)` and matching the selected item by exact start/end tick position — not via a `trackItem.getTrackIndex()` method, which the PRD asserts exists but which the spike phase never actually exercised. This conveniently solves both the media-type question and the track-index question with one already-proven mechanism.
+- **Placement track-auto-creation logic (`insertion.js`) branches on which action to use**: `createInsertProjectItemAction` (with `limitedShift: true`) when no track exists below the original (this is the ONLY action confirmed live to auto-create a track — see Spike C), vs. `createOverwriteItemAction` when a track already exists below (per the PRD's explicit preference, to avoid rippling). On a brand-new empty track these two have identical effect anyway, since there's nothing to shift.
+- **The WAV export preset is now bundled with the plugin** at `assets/presets/Waveform Audio 48kHz 16-bit.epr` (copied from this Mac's AME 2026 install) instead of referenced by the spike's hardcoded absolute AME path — this was an explicit known rough edge called out in `spikes/README.md`. `export.js` reads it via `uxp.storage.localFileSystem.getPluginFolder()`, **which has not been exercised live anywhere in this project** — worth watching closely on the first real export test. Windows will need its own bundled `.epr` at some point (still deferred, see below).
+- Several PRD-asserted `ClipProjectItem` eligibility checks (`isMulticam`, `isMergedClip`, `isProxy`) are called defensively (feature-detected, never assumed) in `selection.js` — if a method doesn't exist on this build, it's recorded in a `diagnostics` array logged to the console (not silently treated as pass or fail). Check the UDT console during eligibility testing to see what actually ran.
+- `uxp.shell.openPath()` (for the "Reveal Cache Folder" button) and `Folder.getEntries()`/`Folder.getEntry()` (for cache housekeeping) are standard, well-documented, non-Premiere-specific UXP storage APIs, not exercised live in this project yet either — lower risk than the Premiere-specific items above, but still unverified.
+
+## How to load and test Phase 1
+
+1. Open **Adobe UXP Developer Tools** → **Add Plugin** → select `/Users/anmolpreet/Documents/Awwphonic/manifest.json`. This is a different plugin id (`com.hackerrank.auphonic-premiere`) from the spike (`com.hackerrank.auphonic-spike`), so both can be loaded side by side without conflict.
+2. Click **Load** (or **Load & Watch** for auto-reload while iterating). In Premiere: **Window → UXP Plugins → Auphonic Audio Processor**.
+3. Walk through the build plan's section 4 checklist in order (skeleton panel → API key/credits → preset dropdown → clip selection/validation → cost estimate → export → upload/process/download → timeline placement → job record file → error handling/cache buttons). Each has its own visual check already described there.
+4. Watch the UDT console/debugger throughout, not just the panel — several of the "new facts" above will only reveal themselves there (diagnostics array contents, any thrown errors from unverified APIs like `getPluginFolder()`).
+
+## Previous status (superseded above, kept for the spike-phase record): all verification is done.
 
 Every required spike from the plan has passed, with live evidence (not guesses):
 

@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 5,
+  "id": "com.hackerrank.auphonic-premiere",
+  "name": "Auphonic Audio Processor",
+  "shortname": "auphonic",
+  "version": "0.1.0",
+  "main": "index.html",
+  "host": {
+    "app": "premierepro",
+    "minVersion": "26.0.0"
+  },
+  "requiredPermissions": {
+    "localFileSystem": "request",
+    "network": {
+      "domains": [
+        "https://auphonic.com",
+        "https://*.auphonic.com"
+      ]
+    }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "auphonicPanel",
+      "label": { "default": "Auphonic Audio Processor" },
+      "minimumSize": { "width": 420, "height": 520 },
+      "preferredDockedSize": { "width": 520, "height": 720 }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "auphonic-premiere-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "UXP plugin for Adobe Premiere Pro that cleans clip audio via Auphonic.",
+  "devDependencies": {
+    "@adobe/premierepro": "*"
+  }
+}

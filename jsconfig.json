@@ -1,0 +1,6 @@
+{
+  "compilerOptions": {
+    "types": ["@adobe/premierepro"]
+  },
+  "excludes": ["node_modules"]
+}
