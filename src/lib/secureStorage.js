@@ -3,58 +3,69 @@
  * Auphonic API key. TextDecoder does not exist in this UXP host (confirmed
  * live during the spike phase) -- decodeUtf8 below is the manual fallback,
  * carried over unchanged from the spike since it was already proven correct.
+ *
+ * Loaded as a plain <script> tag (see index.html), not via require() --
+ * local require() across files was confirmed NOT to resolve reliably in this
+ * UXP host (module loader treats a script-tag-loaded entry's own folder as
+ * the plugin root, not its actual location, breaking sibling requires). Each
+ * file is wrapped in its own IIFE to avoid top-level identifier collisions
+ * between files sharing one global scope, and publishes its API onto a
+ * shared window.Auphonic namespace instead of module.exports.
  */
-const uxp = require("uxp");
+(function () {
+  const uxp = require("uxp");
 
-const API_KEY_STORAGE_KEY = "auphonic_api_key";
+  const API_KEY_STORAGE_KEY = "auphonic_api_key";
 
-function decodeUtf8(bytes) {
-  if (typeof TextDecoder !== "undefined") {
-    return new TextDecoder().decode(bytes);
-  }
-  let result = "";
-  let i = 0;
-  while (i < bytes.length) {
-    const b1 = bytes[i];
-    if (b1 < 0x80) {
-      result += String.fromCharCode(b1);
-      i += 1;
-    } else if ((b1 & 0xe0) === 0xc0) {
-      result += String.fromCharCode(((b1 & 0x1f) << 6) | (bytes[i + 1] & 0x3f));
-      i += 2;
-    } else if ((b1 & 0xf0) === 0xe0) {
-      result += String.fromCharCode(
-        ((b1 & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f)
-      );
-      i += 3;
-    } else if ((b1 & 0xf8) === 0xf0) {
-      const codepoint =
-        ((b1 & 0x07) << 18) |
-        ((bytes[i + 1] & 0x3f) << 12) |
-        ((bytes[i + 2] & 0x3f) << 6) |
-        (bytes[i + 3] & 0x3f);
-      result += String.fromCodePoint(codepoint);
-      i += 4;
-    } else {
-      result += String.fromCharCode(b1);
-      i += 1;
+  function decodeUtf8(bytes) {
+    if (typeof TextDecoder !== "undefined") {
+      return new TextDecoder().decode(bytes);
     }
+    let result = "";
+    let i = 0;
+    while (i < bytes.length) {
+      const b1 = bytes[i];
+      if (b1 < 0x80) {
+        result += String.fromCharCode(b1);
+        i += 1;
+      } else if ((b1 & 0xe0) === 0xc0) {
+        result += String.fromCharCode(((b1 & 0x1f) << 6) | (bytes[i + 1] & 0x3f));
+        i += 2;
+      } else if ((b1 & 0xf0) === 0xe0) {
+        result += String.fromCharCode(
+          ((b1 & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f)
+        );
+        i += 3;
+      } else if ((b1 & 0xf8) === 0xf0) {
+        const codepoint =
+          ((b1 & 0x07) << 18) |
+          ((bytes[i + 1] & 0x3f) << 12) |
+          ((bytes[i + 2] & 0x3f) << 6) |
+          (bytes[i + 3] & 0x3f);
+        result += String.fromCodePoint(codepoint);
+        i += 4;
+      } else {
+        result += String.fromCharCode(b1);
+        i += 1;
+      }
+    }
+    return result;
   }
-  return result;
-}
 
-async function saveApiKey(apiKey) {
-  await uxp.storage.secureStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
-}
+  async function saveApiKey(apiKey) {
+    await uxp.storage.secureStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+  }
 
-async function loadApiKey() {
-  const raw = await uxp.storage.secureStorage.getItem(API_KEY_STORAGE_KEY);
-  if (!raw) return null;
-  return raw instanceof Uint8Array ? decodeUtf8(raw) : String(raw);
-}
+  async function loadApiKey() {
+    const raw = await uxp.storage.secureStorage.getItem(API_KEY_STORAGE_KEY);
+    if (!raw) return null;
+    return raw instanceof Uint8Array ? decodeUtf8(raw) : String(raw);
+  }
 
-async function clearApiKey() {
-  await uxp.storage.secureStorage.removeItem(API_KEY_STORAGE_KEY);
-}
+  async function clearApiKey() {
+    await uxp.storage.secureStorage.removeItem(API_KEY_STORAGE_KEY);
+  }
 
-module.exports = { saveApiKey, loadApiKey, clearApiKey, decodeUtf8 };
+  window.Auphonic = window.Auphonic || {};
+  window.Auphonic.secureStorage = { saveApiKey, loadApiKey, clearApiKey, decodeUtf8 };
+})();

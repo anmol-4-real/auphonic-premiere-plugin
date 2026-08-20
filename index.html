@@ -43,4 +43,21 @@
   <div class="status-line" id="cacheStatus"></div>
 </section>
 
+<!--
+  Loaded as separate <script> tags, in dependency order, instead of using
+  require() between our own files -- that wasn't reliable in this UXP host
+  (see the comment at the top of src/lib/secureStorage.js for why). Each file
+  publishes itself onto a shared window.Auphonic namespace.
+-->
+<script src="src/lib/secureStorage.js"></script>
+<script src="src/lib/paths.js"></script>
+<script src="src/core/errors.js"></script>
+<script src="src/core/jobModel.js"></script>
+<script src="src/core/auphonicClient.js"></script>
+<script src="src/core/selection.js"></script>
+<script src="src/core/costEstimate.js"></script>
+<script src="src/core/export.js"></script>
+<script src="src/core/insertion.js"></script>
+<script src="src/core/cache.js"></script>
+<script src="src/ui/panel.js"></script>
 <script src="src/main.js"></script>

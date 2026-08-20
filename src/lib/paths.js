@@ -12,94 +12,101 @@
  *       input.wav
  *       production.json
  *       output.wav
+ *
+ * Loaded as a plain <script> tag -- see the note at the top of
+ * lib/secureStorage.js for why (local require() doesn't resolve reliably in
+ * this UXP host). Published on window.Auphonic.paths.
  */
-const uxp = require("uxp");
+(function () {
+  const uxp = require("uxp");
 
-async function getOrCreateFolder(parentFolder, name) {
-  try {
-    const existing = await parentFolder.getEntry(name);
-    if (existing && existing.isFolder) return existing;
-  } catch (e) {
-    // Not found -- fall through to create it.
+  async function getOrCreateFolder(parentFolder, name) {
+    try {
+      const existing = await parentFolder.getEntry(name);
+      if (existing && existing.isFolder) return existing;
+    } catch (e) {
+      // Not found -- fall through to create it.
+    }
+    return parentFolder.createFolder(name);
   }
-  return parentFolder.createFolder(name);
-}
 
-async function getCacheRoot() {
-  const dataFolder = await uxp.storage.localFileSystem.getDataFolder();
-  return getOrCreateFolder(dataFolder, "AuphonicCache");
-}
-
-/*
- * Short, stable, non-cryptographic hash (FNV-1a) of the project's own file
- * path. Only needs to be stable and collision-unlikely for folder naming --
- * not secure -- so a well-known simple string hash is the right tool, rather
- * than assuming a crypto module exists in this UXP host.
- */
-function shortHash(input) {
-  let hash = 0x811c9dc5;
-  const str = String(input || "");
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
+  async function getCacheRoot() {
+    const dataFolder = await uxp.storage.localFileSystem.getDataFolder();
+    return getOrCreateFolder(dataFolder, "AuphonicCache");
   }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
 
-async function getProjectsFolder() {
-  const root = await getCacheRoot();
-  return getOrCreateFolder(root, "projects");
-}
-
-async function getJobFolder(project, jobId) {
-  const projectsFolder = await getProjectsFolder();
-  const projectHash = shortHash(project && (project.path || project.name));
-  const projectFolder = await getOrCreateFolder(projectsFolder, projectHash);
-  return getOrCreateFolder(projectFolder, jobId);
-}
-
-/* Returns the File entry, created (and overwritable) up front, so its
- * .nativePath can be handed to code that needs a plain OS path string
- * (e.g. the Premiere encoder) without us ever building that string by hand. */
-async function reserveFile(folder, name) {
-  return folder.createFile(name, { overwrite: true });
-}
-
-async function readJson(folder, name) {
-  try {
-    const entry = await folder.getEntry(name);
-    const text = await entry.read({ format: uxp.storage.formats.utf8 });
-    return JSON.parse(text);
-  } catch (e) {
-    return null;
+  /*
+   * Short, stable, non-cryptographic hash (FNV-1a) of the project's own file
+   * path. Only needs to be stable and collision-unlikely for folder naming --
+   * not secure -- so a well-known simple string hash is the right tool, rather
+   * than assuming a crypto module exists in this UXP host.
+   */
+  function shortHash(input) {
+    let hash = 0x811c9dc5;
+    const str = String(input || "");
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
   }
-}
 
-async function writeJson(folder, name, value) {
-  const file = await reserveFile(folder, name);
-  await file.write(JSON.stringify(value, null, 2), { format: uxp.storage.formats.utf8 });
-  return file;
-}
+  async function getProjectsFolder() {
+    const root = await getCacheRoot();
+    return getOrCreateFolder(root, "projects");
+  }
 
-async function readBinary(fileEntry) {
-  return fileEntry.read({ format: uxp.storage.formats.binary });
-}
+  async function getJobFolder(project, jobId) {
+    const projectsFolder = await getProjectsFolder();
+    const projectHash = shortHash(project && (project.path || project.name));
+    const projectFolder = await getOrCreateFolder(projectsFolder, projectHash);
+    return getOrCreateFolder(projectFolder, jobId);
+  }
 
-async function writeBinary(folder, name, arrayBuffer) {
-  const file = await reserveFile(folder, name);
-  await file.write(arrayBuffer, { format: uxp.storage.formats.binary });
-  return file;
-}
+  /* Returns the File entry, created (and overwritable) up front, so its
+   * .nativePath can be handed to code that needs a plain OS path string
+   * (e.g. the Premiere encoder) without us ever building that string by hand. */
+  async function reserveFile(folder, name) {
+    return folder.createFile(name, { overwrite: true });
+  }
 
-module.exports = {
-  getCacheRoot,
-  getProjectsFolder,
-  getJobFolder,
-  getOrCreateFolder,
-  reserveFile,
-  readJson,
-  writeJson,
-  readBinary,
-  writeBinary,
-  shortHash,
-};
+  async function readJson(folder, name) {
+    try {
+      const entry = await folder.getEntry(name);
+      const text = await entry.read({ format: uxp.storage.formats.utf8 });
+      return JSON.parse(text);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function writeJson(folder, name, value) {
+    const file = await reserveFile(folder, name);
+    await file.write(JSON.stringify(value, null, 2), { format: uxp.storage.formats.utf8 });
+    return file;
+  }
+
+  async function readBinary(fileEntry) {
+    return fileEntry.read({ format: uxp.storage.formats.binary });
+  }
+
+  async function writeBinary(folder, name, arrayBuffer) {
+    const file = await reserveFile(folder, name);
+    await file.write(arrayBuffer, { format: uxp.storage.formats.binary });
+    return file;
+  }
+
+  window.Auphonic = window.Auphonic || {};
+  window.Auphonic.paths = {
+    getCacheRoot,
+    getProjectsFolder,
+    getJobFolder,
+    getOrCreateFolder,
+    reserveFile,
+    readJson,
+    writeJson,
+    readBinary,
+    writeBinary,
+    shortHash,
+  };
+})();
