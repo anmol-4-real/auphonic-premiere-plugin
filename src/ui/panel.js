@@ -19,6 +19,7 @@
   const costEstimate = window.Auphonic.costEstimate;
   const exportModule = window.Auphonic.exportModule;
   const insertion = window.Auphonic.insertion;
+  const organization = window.Auphonic.organization;
   const handles = window.Auphonic.handles;
   const jobModel = window.Auphonic.jobModel;
   const cache = window.Auphonic.cache;
@@ -214,6 +215,59 @@
     });
   }
 
+  /* -------------------------------------------------------- label color */
+
+  function populateLabelColorOptions() {
+    const select = el("labelColorSelect");
+    select.innerHTML = "";
+    const noneOption = document.createElement("option");
+    noneOption.value = "none";
+    noneOption.textContent = "None";
+    select.appendChild(noneOption);
+    organization.listColorLabelNames().forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name.charAt(0) + name.slice(1).toLowerCase();
+      select.appendChild(option);
+    });
+  }
+
+  async function wireLabelColorSection() {
+    populateLabelColorOptions();
+    const select = el("labelColorSelect");
+    const settings = await cache.getSettings();
+    const isValid = settings.labelColor && Array.from(select.options).some((o) => o.value === settings.labelColor);
+    select.value = isValid ? settings.labelColor : "none";
+    select.addEventListener("change", () => {
+      cache.saveSettings({ labelColor: select.value });
+    });
+  }
+
+  function selectedLabelColor() {
+    return el("labelColorSelect").value || "none";
+  }
+
+  /* ---------------------------------------------------------- formats */
+
+  async function wireExtraFormatsSection() {
+    const settings = await cache.getSettings();
+    el("mp3Enabled").checked = Boolean(settings.mp3Enabled);
+    el("aacEnabled").checked = Boolean(settings.aacEnabled);
+    el("mp3Enabled").addEventListener("change", () => {
+      cache.saveSettings({ mp3Enabled: el("mp3Enabled").checked });
+    });
+    el("aacEnabled").addEventListener("change", () => {
+      cache.saveSettings({ aacEnabled: el("aacEnabled").checked });
+    });
+  }
+
+  function selectedExtraFormats() {
+    const formats = [];
+    if (el("mp3Enabled").checked) formats.push("mp3");
+    if (el("aacEnabled").checked) formats.push("aac");
+    return formats;
+  }
+
   /* ------------------------------------------------------------ selection */
 
   async function checkSelection() {
@@ -277,6 +331,8 @@
             handlesSeconds: requestedHandleSeconds(),
             originalSelectionType: result.originalSelectionType,
             linkedAudioResolved: result.linkedAudioResolved,
+            extraFormats: selectedExtraFormats(),
+            labelColor: selectedLabelColor(),
           });
           job.collisionDetected = true;
           job.collisionDecision = "canceled";
@@ -302,7 +358,15 @@
 
       const est = costEstimate.estimate({ durationSeconds: handlesPlan.widenedDurationSeconds, availableCreditsHours: credits });
 
-      state.pendingJob = { ...result, preset, estimate: est, handlesPlan, forceNewTrackBelow };
+      state.pendingJob = {
+        ...result,
+        preset,
+        estimate: est,
+        handlesPlan,
+        forceNewTrackBelow,
+        extraFormats: selectedExtraFormats(),
+        labelColor: selectedLabelColor(),
+      };
 
       const eligibleLabel =
         result.originalSelectionType === "video"
@@ -356,6 +420,8 @@
       forceNewTrackBelow,
       originalSelectionType,
       linkedAudioResolved,
+      extraFormats,
+      labelColor,
     } = pendingJob;
     clearLog("progressLog");
     show("progressBox");
@@ -374,6 +440,8 @@
       handlesSeconds: handlesPlan.leftSeconds > 0 || handlesPlan.rightSeconds > 0 ? Math.max(handlesPlan.leftSeconds, handlesPlan.rightSeconds) : 0,
       originalSelectionType,
       linkedAudioResolved,
+      extraFormats,
+      labelColor,
     });
     job.collisionDetected = Boolean(forceNewTrackBelow);
     job.collisionDecision = forceNewTrackBelow ? "created_new_track" : null;
@@ -430,10 +498,12 @@
       jobModel.markStatus(job, "creating_production");
       await jobModel.saveJob(project, job);
       const outputBasename = `${clipName}_Auphonic_${preset.name}`.replace(/[\/:*?"<>|]/g, "_");
+      console.log("Auphonic: requested extra formats for this production:", JSON.stringify(extraFormats));
       const productionUuid = await auphonicClient.createProduction(state.apiKey, {
         presetUuid: preset.uuid,
         title: `${clipName} - Auphonic`,
         outputBasename,
+        extraFormats,
       });
       job.productionId = productionUuid;
       logStep(`Production created: ${productionUuid}`, "ok");
@@ -467,15 +537,27 @@
       await jobModel.saveJob(project, job);
       const detail = await auphonicClient.getProductionDetail(state.apiKey, productionUuid);
       // Live-verification aid for the "open in browser" URL (see
-      // buildProductionUrl above) -- check this log once for an undocumented
-      // url-like field before trusting the guessed URL pattern.
-      console.log("Auphonic: full production detail (checking for an undocumented URL field):", JSON.stringify(detail));
-      const outputFileMeta = (detail.output_files || []).find((f) => f.format === "wav") || (detail.output_files || [])[0];
-      if (!outputFileMeta) {
-        throw new AuphonicPluginError(CATEGORY.DOWNLOAD_FAILED, "Auphonic reported no output file.");
+      // buildProductionUrl above), and now also for confirming (Phase 3) that
+      // output_files[] carries a `format` field that reliably distinguishes
+      // wav/mp3/aac when more than one is requested at once.
+      console.log("Auphonic: full production detail (checking output_files shape for each requested format):", JSON.stringify(detail));
+      // Match by `format` first; fall back to `ending` in case Auphonic
+      // echoes the container extension instead of the requested codec name
+      // (e.g. AAC requested with ending "m4a" -- never confirmed live before
+      // this phase, so both plausible response shapes are covered here
+      // rather than trusting only the one the PRD's request sample shows).
+      const EXT_FOR_FORMAT = { wav: "wav", mp3: "mp3", aac: "m4a" };
+      const findOutputFileMeta = (format) => {
+        const files = detail.output_files || [];
+        return files.find((f) => f.format === format) || files.find((f) => f.ending === EXT_FOR_FORMAT[format]) || null;
+      };
+
+      const wavMeta = findOutputFileMeta("wav");
+      if (!wavMeta) {
+        throw new AuphonicPluginError(CATEGORY.DOWNLOAD_FAILED, "Auphonic reported no WAV output file.");
       }
-      const downloadedBytes = await auphonicClient.downloadOutputFile(state.apiKey, outputFileMeta.download_url);
-      const outputFile = await paths.writeBinary(jobFolder, "output.wav", downloadedBytes);
+      const wavBytes = await auphonicClient.downloadOutputFile(state.apiKey, wavMeta.download_url);
+      const outputFile = await paths.writeBinary(jobFolder, "output.wav", wavBytes);
       job.outputCachePath = outputFile.nativePath;
       logStep(`Downloaded: ${outputFile.nativePath}`, "ok");
 
@@ -497,6 +579,8 @@
         originalClipName: clipName,
         presetName: preset.name,
         forceNewTrackBelow,
+        binName: organization.DEFAULT_BIN_NAME,
+        colorLabel: labelColor,
       });
 
       jobModel.markStatus(job, "inserted");
@@ -515,6 +599,44 @@
       } else {
         logStep("Original audio disabled (clip kept, not deleted).", "ok");
       }
+      placement.organizationWarnings.forEach((w) => logStep(`Warning: ${w}`, "warn"));
+
+      // Phase 3: MP3/AAC, generated alongside WAV at no extra Auphonic cost
+      // (PRD 5). Only WAV ever goes on the timeline -- these are imported
+      // into the shared bin for reference/delivery only. Each format is
+      // independently non-fatal: a problem here must never undo the WAV
+      // placement that already succeeded above.
+      for (const format of extraFormats) {
+        const meta = findOutputFileMeta(format);
+        if (!meta) {
+          logStep(`Warning: Auphonic reported no ${format.toUpperCase()} output file -- skipping.`, "warn");
+          continue;
+        }
+        try {
+          setProgress(`Downloading and importing ${format.toUpperCase()}...`);
+          const bytes = await auphonicClient.downloadOutputFile(state.apiKey, meta.download_url);
+          const ext = EXT_FOR_FORMAT[format];
+          const extraFile = await paths.writeBinary(jobFolder, `output.${ext}`, bytes);
+          const extra = await insertion.importExtraOutputFile({
+            project,
+            filePath: extraFile.nativePath,
+            originalClipName: clipName,
+            presetName: preset.name,
+            ext,
+            binName: organization.DEFAULT_BIN_NAME,
+            colorLabel: labelColor,
+          });
+          job.extraOutputCachePaths[format] = extraFile.nativePath;
+          logStep(`Imported "${extra.newName}" into the "${organization.DEFAULT_BIN_NAME}" bin.`, "ok");
+          extra.organizationWarnings.forEach((w) => logStep(`Warning: ${w}`, "warn"));
+        } catch (err) {
+          logStep(`Warning: could not import the ${format.toUpperCase()} file (${describeError(err)}).`, "warn");
+        }
+      }
+      if (extraFormats.length > 0) {
+        await jobModel.saveJob(project, job);
+      }
+
       setProgress("Done.");
       logStep("JOB COMPLETE.", "ok");
     } catch (err) {
@@ -533,6 +655,7 @@
 
   async function wireProcessSection() {
     await wireHandlesSection();
+    await wireExtraFormatsSection();
     el("checkSelectionBtn").addEventListener("click", checkSelection);
     el("confirmBtn").addEventListener("click", async () => {
       if (!state.pendingJob) return;
@@ -571,6 +694,7 @@
   async function init() {
     wireAccountSection();
     await wireProcessSection();
+    await wireLabelColorSection();
     wireCacheSection();
     await tryAutoConnect();
   }

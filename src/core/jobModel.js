@@ -22,9 +22,9 @@
   /*
    * fields: originalClipName, sequenceGuid, sourceProjectItemPath,
    *         timelineStartTicks, timelineEndTicks, presetUuid, handlesSeconds,
-   *         originalSelectionType, linkedAudioResolved (all but the first
-   *         six are Phase 2 additions; each has a sensible default so
-   *         Phase 1 call sites that don't pass them still work).
+   *         originalSelectionType, linkedAudioResolved (Phase 2), extraFormats,
+   *         labelColor (Phase 3) -- each has a sensible default so earlier
+   *         call sites that don't pass them still work.
    */
   function createJob(fields) {
     const jobId = makeJobId(fields.originalClipName);
@@ -50,8 +50,11 @@
       sourceMode: "clean-source",
       presetUuid: fields.presetUuid,
       outputFormat: "wav",
+      extraFormats: fields.extraFormats || [],
+      labelColor: fields.labelColor || "none",
       inputCachePath: null,
       outputCachePath: null,
+      extraOutputCachePaths: {},
       status: "created",
       errorCategory: null,
       errorMessage: null,

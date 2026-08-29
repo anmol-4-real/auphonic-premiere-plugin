@@ -1,6 +1,6 @@
-# Auphonic Premiere Plugin — Handoff for Phase 3
+# Auphonic Premiere Plugin — Handoff for Phase 4
 
-Paste this entire document as your first message in a new session to continue this project. It contains everything learned across setup, the spike phase, and the full Phase 1 and Phase 2 builds (including six real bugs found and fixed via live testing across the two phases), so a new session can start Phase 3 immediately without repeating any research.
+Paste this entire document as your first message in a new session to continue this project. It contains everything learned across setup, the spike phase, and the full Phase 1, Phase 2, and Phase 3 builds (including seven real bugs found and fixed via live testing across the three phases, plus one suspected bug that live diagnostics disproved rather than "fixed" — see Phase 3's write-up below), so a new session can start Phase 4 immediately without repeating any research.
 
 ## What this project is
 
@@ -14,7 +14,10 @@ The original build plan (setup, spikes, and the Phase 1 breakdown) was approved 
 The Phase 2 plan (handles, linked-audio resolution, collision detection, open-in-browser) was drafted and approved the same way before any Phase 2 code was touched, and lives at:
 `/Users/anmolpreet/.claude/plans/radiant-weaving-valiant.md`
 
-**No detailed, approved plan exists yet for Phase 3** — unlike Phase 1 and Phase 2, which both had a full step-by-step plan written and approved before any code was touched. The PRD only describes Phase 3's scope at a high level (see "Phase 3 scope" below, which collects every relevant PRD detail so a new session doesn't have to re-read the whole PRD). Consider drafting and getting a short Phase 3 plan approved first, the same way Phase 1 and Phase 2 were handled, rather than jumping straight to code — this matches how the project has worked so far and the user has explicitly valued that thoroughness.
+The Phase 3 plan (the "Auphonic Processed Audio" bin, label colors, MP3/AAC output formats) was drafted and approved the same way before any Phase 3 code was touched, and lives at:
+`/Users/anmolpreet/.claude/plans/misty-exploring-crab.md`
+
+**No detailed, approved plan exists yet for Phase 4** — unlike Phases 1 through 3, which each had a full step-by-step plan written and approved before any code was touched. The PRD only describes Phase 4's scope at a high level (see "Phase 4 scope" below, which collects every relevant PRD detail so a new session doesn't have to re-read the whole PRD). Consider drafting and getting a short Phase 4 plan approved first, the same way Phases 1 through 3 were handled, rather than jumping straight to code — this matches how the project has worked so far and the user has explicitly valued that thoroughness.
 
 ## Environment
 
@@ -33,8 +36,8 @@ The project is on GitHub, connected and pushed:
 - Local git identity for this repo only: name `Anmolpreet`, email `anmolpreet@hackerrank.com`.
 - `.gitignore` excludes: `reference/` (Adobe's sample repo — re-clone with `git clone https://github.com/AdobeDocs/uxp-premiere-pro-samples.git reference/uxp-premiere-pro-samples` if needed again), `Test Exports/`, `.claude/`, `.DS_Store`.
 - **User wants to be asked before every commit, and separately before every push** — don't do either proactively. This has been asked and answered explicitly; don't re-ask the general preference, just follow it (asking about each *specific* commit/push is still expected — the preference is about cadence, not a one-time blanket approval).
-- Commit history as of the `main` HEAD reflecting a fully working, live-verified Phase 1: (1) spike plugin + earliest handoff doc, (2) first full Phase 1 build (written but not yet live-tested at that point), (3) all fixes found during live testing (module loading, media-type detection, `importFiles` args).
-- **The full Phase 2 build (code + this updated HANDOFF.md) is complete and live-verified as of this write-up but has not yet been committed** — verify with `git status` before trusting that, and ask the user before committing/pushing it, per the standing preference above.
+- Commit history as of the `main` HEAD reflects a fully working, live-verified Phase 1 and Phase 2: spike plugin + earliest handoff doc, the version-control section, the first full Phase 1 build, all Phase 1 live-testing fixes (module loading, media-type detection, `importFiles` args), the Phase 2 continuation handoff rewrite, and the full Phase 2 build (handles, linked audio, collision detection, browser link).
+- **The full Phase 3 build (code + this updated HANDOFF.md) is complete and live-verified as of this write-up but has not yet been committed** — verify with `git status` before trusting that, and ask the user before committing/pushing it, per the standing preference above.
 
 ## Project history
 
@@ -104,6 +107,28 @@ Built on top of Phase 1: two new files (`src/core/ticks.js` — shared tick-arit
 2. **A clip with zero untrimmed source media (already using its source file's exact full range) needs its left handle clamped to zero, and that clamp cannot depend solely on `ppro.Metadata.getProjectColumnsMetadata`.** That API's behavior on this build was never confirmed and evidently didn't produce a working clamp live — an untrimmed clip's left handle went uncorrected past zero and crashed trying to set a negative in-point ("Invalid parameter" again, a different call site than bug #1). **Fixed** two independent ways: the left-handle clamp now always checks directly against `trackItem.getInPoint()` (already confirmed reliable, source-relative to media start — see below) regardless of whether the Metadata lookup succeeds, so this exact case can't be missed again; and separately, `export.js`'s widen step now attempts each side independently and backs off (halves the requested amount, retries) rather than throwing if Premiere rejects it — a second safety net for any clamp that's still wrong for some other reason.
 3. **Clicking a video clip with linked audio via a normal click in Premiere selects both the video and its linked audio together (2 track items), not the video alone.** Phase 1's existing "one clip at a time" guard rejected this pair before Phase 2's linked-audio resolution ever ran — confirmed live: Option-click (selects just the video) worked, a normal click was rejected as "2 clips are selected." **Fixed** by detecting this specific shape (one video item plus its own already-linked audio item, confirmed via the same media-path-plus-overlap check used for linked-audio resolution itself) and collapsing it down to "the video was selected" before the one-clip-at-a-time check runs, rather than loosening that check to allow arbitrary multi-selections.
 
+### 5. Phase 3 build (done, fully live-verified)
+
+Built on top of Phase 1/2: one new file (`src/core/organization.js` — bin get-or-create, move-item-to-bin, apply-label-color, live label-color-name listing) plus edits to `src/core/{insertion,auphonicClient,jobModel}.js`, `src/ui/panel.js`, `index.html`. A plan was drafted and approved before any code was written, mirroring Phase 1/2 (see `misty-exploring-crab.md` above).
+
+Two open design questions were settled with the user before planning, since the PRD left them ambiguous (PRD 9.5 says "apply the *selected* label color" without ever giving it a default, and never says what should happen to MP3/AAC given only one file can ever go on the timeline): label color is a user-selectable dropdown (Premiere's built-in named colors, read live off `ppro.Constants.ProjectItemColorLabel` rather than hardcoded), defaulting to "None," persisted like the preset; and MP3/AAC extra formats are imported into the shared bin only, never placed on the timeline.
+
+**Confirmed working end to end, in real Premiere, on real clips:**
+
+| # | Item | Status |
+|---|---|---|
+| 1 | "Auphonic Processed Audio" bin, created once and reused | ✅ Confirmed — created on the first job, reused (not duplicated) on every job after |
+| 2 | User-selectable label color, default None | ✅ Confirmed — a real selected color shows correctly on the project item; "None" leaves the item's color untouched |
+| 3 | MP3/AAC extra output formats | ✅ Confirmed — both formats download, import, and land in the shared bin; only WAV is ever placed on the timeline |
+
+**One real bug found and fixed during live testing** (same pattern as Phase 1/2: a plausible assumption didn't hold on this exact build, diagnosed and fixed from live evidence, not guessed at twice):
+
+1. **Once the "Auphonic Processed Audio" bin exists, `project.importFiles()` imports new files directly into it, not into the project root Phase 1/2 always assumed.** `findProjectItemByMediaPath` only ever searched `rootItem.getItems()` (top level) — confirmed live to fail consistently (even after a 6-attempt retry with a delay, which ruled out a timing race) on every job after the first, since the newly imported file was never at the root once the bin existed. **Fixed** by making the search recurse into bins (`item.type === ppro.ProjectItem.TYPE_BIN` → `ppro.FolderItem.cast()` → `.getItems()`, the same recursion pattern already demonstrated in Adobe's own reference sample) instead of assuming which level `importFiles` lands on.
+
+**One suspected bug, investigated and disproven rather than fixed** (recorded because it cost real debugging time and is a useful lesson on its own): with two Premiere projects docked side by side, the bin appeared to land in the wrong project. Two separate rounds of live-diagnostic logging (`ppro.Project.getActiveProject()` compared against the job's own target project, before and after every project-mutating action) showed them matching exactly, every single time, across an entire job with three output formats — proving there was no code-level project drift or mismatch at all. The real explanation, confirmed directly by the user: the selected clip's sequence genuinely belonged to the *other* project the whole time, a workspace mix-up rather than a plugin bug. The defensive code built on the (twice-disproven) drift theory — an active-project reassertion before every organize action, plus the now-unnecessary import retry loop — was removed again afterward rather than left in as permanent complexity once the evidence ruled out its premise.
+
+**A separate, deliberately deferred issue found during this testing, not fixed:** selecting a clip whose audio is already disabled (e.g. a clip Auphonic already processed once) is not rejected by `selection.js`'s eligibility checks — the job proceeds through export/upload and only fails with a generic "Auphonic reported a processing error." Per the user's explicit request, this is tracked for a future edge-case cleanup pass rather than fixed during Phase 3 itself (see project memory `project_disabled_clip_edge_case.md` in this project's memory folder).
+
 ## Confirmed, real API patterns (verified live on this exact machine — use these directly, don't re-derive)
 
 **Module loading:**
@@ -138,6 +163,13 @@ Built on top of Phase 1: two new files (`src/core/ticks.js` — shared tick-arit
 - `trackItem.getInPoint()`/`getOutPoint()` are the reliable source for how much of a clip's own source media is already in use — use these directly for the left-handle clamp (available head-room = `getInPoint()`'s tick value, since it's already source-relative to media start). Do **not** rely on `ppro.Metadata.getProjectColumnsMetadata`'s `Column.Intrinsic.MediaStart`/`MediaEnd` columns as the sole source for this — its behavior on this build was never confirmed to produce a working clamp and a fully untrimmed clip crashed live when it was the only guard (Phase 2 bug #2 below). That Metadata lookup is still used as a best-effort estimate for the *right* handle only (there's no equally simple proven source for total media length there), backed by a real safety net regardless: the actual widen step attempts the requested amount and backs off (halves, retries) if Premiere rejects it, rather than trusting any pre-computed clamp as authoritative.
 - `ppro.TickTime.createWithSeconds(seconds)` confirmed live as the correct way to convert a plain seconds value into ticks.
 
+**Organization -- bins, labels, formats (Phase 3, confirmed live):**
+- `rootItem.createBinAction(binName, true)` (wrapped in the usual `lockedAccess`/`executeTransaction` pattern), then re-finding the new bin by name via `rootItem.getItems()` -- confirmed live, and confirmed idempotent: a second job finds and reuses the existing bin (matched on name + `item.type === ppro.ProjectItem.TYPE_BIN`) instead of creating a duplicate.
+- `rootItem.createMoveItemAction(item, ppro.FolderItem.cast(bin))` -- confirmed live for moving a freshly-imported project item into a bin; the item remains fully usable for timeline placement afterward.
+- `item.createSetColorLabelAction(ppro.Constants.ProjectItemColorLabel.<NAME>)` -- confirmed live on a plain `ProjectItem`. `Object.keys(ppro.Constants.ProjectItemColorLabel)` is read live (rather than hardcoding the 15 names observed in Adobe's reference sample) to populate the color dropdown -- this build's real names matched the sample's, but reading them live means the dropdown can't silently go stale on a different build.
+- Multiple `output_files` entries in one Auphonic production (WAV + MP3 + AAC together) -- confirmed live: the response's `output_files[]` entries reliably match by their own `format` field (`"wav"`/`"mp3"`/`"aac"`) even with all three requested at once. A defensive fallback matching against an `ending` field was added in case Auphonic echoed the container extension instead -- confirmed live to never actually be needed, but harmless to leave in.
+- **Once a bin like "Auphonic Processed Audio" exists in a project, `project.importFiles()` imports new files directly into it, not into the project root** (confirmed live -- this silently broke the existing root-only `findProjectItemByMediaPath` search on every job after the first one that created the bin). Any code that needs to find a just-imported item must search recursively through bins, not just the root level -- see `insertion.js`'s `searchFolderForMediaPath`.
+
 **secureStorage & local files:**
 - `uxp.storage.secureStorage.setItem(key, value)` / `.getItem(key)` (resolves `Uint8Array`) / `.removeItem(key)` — all confirmed working, all async.
 - `TextDecoder` does not exist in this UXP host (confirmed live — a genuine environment gap). Decode the `Uint8Array` from `secureStorage.getItem` manually — a working manual UTF-8 decoder exists in `src/lib/secureStorage.js`'s `decodeUtf8` function, reuse it as-is.
@@ -161,38 +193,34 @@ Built on top of Phase 1: two new files (`src/core/ticks.js` — shared tick-arit
 
 - Clip pattern unknown → follow the PRD's default phase order, do not front-load Phase 4 batch consolidation.
 - Effects mode (Phase 5) is **not needed** — audio is always cleaned from raw source. Dropped entirely from the plan.
-- WAV is the default and only output format so far (Phase 1's only option; MP3/AAC are explicitly Phase 3 scope).
+- WAV is the default and always-generated output format; MP3/AAC are additional, opt-in formats as of Phase 3 (see below) — never replacements for WAV.
 - Windows testing is planned but has been deferred through all of Phase 1; still fully untouched.
-- No `command` entrypoint in the manifest — only the panel, so the cost-estimate confirmation gate always has a place to show itself before any credits are spent. Revisit if Phase 3 or later wants a faster path in, but keep the confirmation gate wherever that path leads.
+- No `command` entrypoint in the manifest — only the panel, so the cost-estimate confirmation gate always has a place to show itself before any credits are spent. Revisit if Phase 4 or later wants a faster path in, but keep the confirmation gate wherever that path leads.
 - Video clips are now resolved to their linked audio automatically (Phase 2, confirmed live, both the Option-click single-item case and the normal 2-item linked-selection case).
 - Collision detection on the destination track now exists and is confirmed live (Phase 2) — see the accepted track-placement limitation above (new track always appends at the end, not necessarily adjacent to the collision).
 - Handles now exist and are confirmed live (Phase 2), off by default, 2.0s when enabled, with clamping on both the sequence-start and source-media sides.
-- Bin creation and label colors are skipped entirely (Phase 3 scope).
 - Multi-selection is still rejected with a message rather than silently processing only the first item, **except** for the one specific shape Phase 2 now unwraps (a video clip plus its own linked audio, selected together as 2 items) — genuine unrelated multi-clip selections are still rejected. Batch/multi-select proper is Phase 4 scope.
+- The "Auphonic Processed Audio" bin (Phase 3, confirmed live) is always on, fixed name, not user-configurable — every processed output (WAV and any extra formats) lands there, reused across jobs rather than recreated each time.
+- Label color (Phase 3, confirmed live) is a user-selectable dropdown, default "None" (no change), persisted like the preset — not a single fixed color applied to everything, and not skipped entirely.
+- MP3/AAC (Phase 3, confirmed live) are opt-in checkboxes, both off by default. Only WAV is ever placed on the timeline; extra formats are imported into the bin only, for reference/delivery, never inserted into the sequence.
 
-## Phase 3 scope (not yet started — no plan file exists yet, only this PRD-derived summary)
+## Phase 4 scope (not yet started — no plan file exists yet, only this PRD-derived summary)
 
-Per PRD section 11's phase list, Phase 3 ("Organization and formats") covers three things.
+Per PRD section 11's phase list, Phase 4 ("Batch queue and cost efficiency") covers:
 
-**1. Label colors (PRD 9.5 step 3, "Apply the selected label color (Phase 3)"):**
-- No further detail exists in the PRD beyond that single line — which label color, and whether it's fixed or user-selectable, is an open design question worth settling early in the Phase 3 planning session rather than assuming.
+- Multi-clip selection expansion into a visible queue.
+- Queue table with per-row status and actions. Statuses per the PRD: Queued, Validating, Exporting temp audio, Creating production, Uploading, Processing on Auphonic, Downloading, Importing, Inserted, Failed, Canceled.
+- Queue persistence across a Premiere or plugin restart.
+- Retry, reusing the same production UUID rather than creating a new one (PRD 9.4's explicit billing warning: a new production with new input is billed again).
+- Cancel before upload.
+- **Consolidated batch mode (PRD 9.3)** — the feature that makes batch processing affordable, and what the PRD itself calls "the most important structural decision in this document." A **job** (one clip) and a **production** (one Auphonic billing unit) are different things; Phases 1–3 map them 1:1, but Phase 4 lets many jobs share one production: their audio is concatenated into a single upload with recorded offsets, and each job's segment is then reinserted separately using different in/out points on the same imported file. One file, several placements, one bill. **This is already prepared for**: `jobModel.createJob` has carried `productionId`, `consolidationOffsetMs`, and `consolidationDurationMs` since Phase 1, unused until now, specifically so Phase 4 wouldn't require rewriting the queue/state-file/polling/retry logic to add them later.
 
-**2. "Auphonic Processed Audio" bin (PRD 12's defaults: "Bin: On, \"Auphonic Processed Audio\""):**
-- Every processed result should land in a bin with this exact name, created if it doesn't already exist.
-- No bin-creation API has been researched or tested anywhere in this project yet — needs its own live-verification pass before UI is built on top of it, per this project's standing rule.
-
-**3. MP3 and AAC output options (PRD 9.4):**
-- Additional formats requested alongside WAV, at no extra Auphonic cost (PRD section 5: "Multiple output formats generated from a single production cost nothing extra"):
-  ```json
-  { "format": "mp3", "bitrate": "192" }
-  { "format": "aac", "bitrate": "192", "ending": "m4a" }
-  ```
-- WAV remains the default; these become additional selectable output formats, not replacements. The existing `output_files` array in `auphonicClient.createProduction` already accepts multiple entries — Phase 1/2 just never populated more than one.
-
-**Also worth deciding early in the Phase 3 session, mirroring Phase 1 and Phase 2:** whether to draft and get a short Phase 3 plan approved first before writing any code, given no such plan exists yet.
+**Also worth deciding early in the Phase 4 session, mirroring Phases 1 through 3:** whether to draft and get a short Phase 4 plan approved first before writing any code. PRD section 13 (open items for the product owner) also flags a directly relevant unresolved question worth putting to Kan before scoping Phase 4's UI: is the typical timeline selection a few long clips (which makes the 3-minute billing minimum irrelevant and consolidation low-value), or many short clips (which makes consolidation the highest-value feature in the whole document, per the PRD's own framing)? The answer changes how much of Phase 4 is worth building, and in what order.
 
 ## How to work with this user
 
-Verify every Premiere/UXP API claim live before building UI around it — this project has hit this lesson repeatedly across both phases (encodeFile's arg count, `WorkAreaUtils` missing, `require()` module resolution, `AudioClipTrackItem.cast()` missing, `importFiles`'s real arg count, `createInsertProjectItemAction` rejecting a `ClipProjectItem` cast, a Metadata-based clamp that didn't fire, a video clip's normal-click selection actually being 2 items) and every single time, live evidence settled it in one pass while guessing would have taken several rounds. When something fails, add a diagnostic that proves the *cause* — a console log, a live shape dump of the real object (`constructor.name`, `Object.getOwnPropertyNames`, relevant `ppro` keys) — rather than guessing at a fix a second time. This exact technique is very likely to be needed again for Phase 3's bin-creation research.
+Verify every Premiere/UXP API claim live before building UI around it — this project has hit this lesson repeatedly across all three phases (encodeFile's arg count, `WorkAreaUtils` missing, `require()` module resolution, `AudioClipTrackItem.cast()` missing, `importFiles`'s real arg count, `createInsertProjectItemAction` rejecting a `ClipProjectItem` cast, a Metadata-based clamp that didn't fire, a video clip's normal-click selection actually being 2 items, `importFiles` targeting a bin instead of the project root once one exists) and every single time, live evidence settled it in one pass while guessing would have taken several rounds. When something fails, add a diagnostic that proves the *cause* — a console log, a live shape dump of the real object (`constructor.name`, `Object.getOwnPropertyNames`, relevant `ppro` keys) — rather than guessing at a fix a second time.
+
+Phase 3 sharpened this discipline further: a suspected cross-project bin bug got two separate rounds of live-diagnostic logging before any more code changed, and the evidence disproved the leading theory *both* times — first ruling out active-project drift, then ruling out a timing race — before the real cause (the bin-changes-where-importFiles-lands issue above) actually surfaced. The same diagnostics also caught a genuine *non-bug*: proof that there was no code-level project mismatch at all correctly redirected the investigation to the user's own workspace setup (two projects docked side by side) rather than more speculative code. Don't leave disproven defensive code in place once evidence rules out its premise — it was removed again in Phase 3 rather than kept "just in case," matching this project's general aversion to unnecessary complexity.
 
 The user has been extremely patient through a long debugging process and has explicitly asked for thoroughness over speed — keep that standard. Ask before every commit and, separately, before every push (see Version control above) — this has been asked and answered once; don't re-ask the general preference, just follow it for each specific action. Talk to the chat operator (Anmolpreet, technical) normally; keep the plugin's own UI copy (button labels, error/status messages) plain-language, since Kan (the non-technical product owner) is the one who actually uses the finished panel.

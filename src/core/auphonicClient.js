@@ -121,8 +121,17 @@
 
   /* output_files is passed explicitly -- omitting it silently returns the
    * preset's own default output (an MP3 in testing), not the WAV Phase 1
-   * requires (confirmed live, see HANDOFF.md). */
-  async function createProduction(apiKey, { presetUuid, title, outputBasename }) {
+   * requires (confirmed live, see HANDOFF.md). WAV is always requested;
+   * extraFormats (Phase 3: "mp3"/"aac") only adds to it, never replaces it --
+   * multiple output formats from one production cost nothing extra (PRD 5). */
+  const FORMAT_SPECS = {
+    wav: { format: "wav" },
+    mp3: { format: "mp3", bitrate: "192" },
+    aac: { format: "aac", bitrate: "192", ending: "m4a" },
+  };
+
+  async function createProduction(apiKey, { presetUuid, title, outputBasename, extraFormats = [] }) {
+    const outputFiles = ["wav", ...extraFormats].map((f) => FORMAT_SPECS[f]);
     let res;
     try {
       res = await xhrRequest({
@@ -133,7 +142,7 @@
           preset: presetUuid,
           metadata: { title },
           output_basename: outputBasename,
-          output_files: [{ format: "wav" }],
+          output_files: outputFiles,
         }),
         contentType: "application/json",
       });

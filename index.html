@@ -15,6 +15,9 @@
   <p class="hint">Choose which Auphonic preset to clean audio with.</p>
   <select id="presetSelect"></select>
   <div class="status-line" id="presetStatus"></div>
+
+  <label for="labelColorSelect">Label color for results (optional)</label>
+  <select id="labelColorSelect"></select>
 </section>
 
 <section class="panel-block hidden" id="processSection">
@@ -27,6 +30,16 @@
   </label>
   <label for="handlesSecondsInput">Handle length (seconds)</label>
   <input id="handlesSecondsInput" type="number" min="0" step="0.5" value="2.0" />
+
+  <p class="hint">Also generate these formats (kept in the "Auphonic Processed Audio" bin, not placed on the timeline):</p>
+  <label class="checkbox-row" for="mp3Enabled">
+    <input type="checkbox" id="mp3Enabled" />
+    MP3
+  </label>
+  <label class="checkbox-row" for="aacEnabled">
+    <input type="checkbox" id="aacEnabled" />
+    AAC
+  </label>
 
   <button id="checkSelectionBtn">Check Selected Clip</button>
   <div class="status-line" id="selectionStatus"><span class="dim">Not checked yet.</span></div>
@@ -67,6 +80,7 @@
 <script src="src/lib/secureStorage.js"></script>
 <script src="src/lib/paths.js"></script>
 <script src="src/core/errors.js"></script>
+<script src="src/core/organization.js"></script>
 <script src="src/core/ticks.js"></script>
 <script src="src/core/jobModel.js"></script>
 <script src="src/core/auphonicClient.js"></script>
