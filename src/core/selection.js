@@ -35,13 +35,28 @@
  * panel's advanced log) instead of silently assumed either way, so a real gap
  * is visible rather than guessed at.
  *
+ * Phase 2 (PRD 9.1, 9.5): a selected video clip is no longer rejected
+ * outright -- resolveLinkedAudio() below looks for its linked audio item by
+ * matching the same underlying media file (getMediaFilePath() equality, the
+ * exact pattern already used in insertion.js's findProjectItemByMediaPath)
+ * PLUS an overlapping timeline range. Overlap, not exact-match: exact-match-
+ * by-position is precisely the mechanism that caused this file's own bug #2
+ * (see above) -- here we deliberately want the item at the (near-)identical
+ * position, since that's what "linked" means for a video+audio pair, but
+ * "overlapping" tolerates a pair that's been independently trimmed slightly.
+ * Once resolved, every remaining check in classifyAndValidate runs against
+ * the resolved AUDIO item, never the video item -- the video is never
+ * touched, exactly as PRD 9.1/9.5 require.
+ *
  * Loaded as a plain <script> tag -- see the note at the top of
- * lib/secureStorage.js for why. Depends on window.Auphonic.errors, which
- * must be loaded first. Published on window.Auphonic.selection.
+ * lib/secureStorage.js for why. Depends on window.Auphonic.errors and
+ * window.Auphonic.ticks, which must be loaded first. Published on
+ * window.Auphonic.selection.
  */
 (function () {
   const ppro = require("premierepro");
   const { CATEGORY, AuphonicPluginError } = window.Auphonic.errors;
+  const ticks = window.Auphonic.ticks;
 
   function ticksOf(tickTime) {
     if (!tickTime) return null;
@@ -161,6 +176,56 @@
     return { mediaType: "unknown", trackIndex: null };
   }
 
+  /*
+   * Searches every audio track for the item linked to videoTrackItem: same
+   * underlying media file, overlapping timeline range. Returns
+   * { trackItem, trackIndex } or null if nothing matches.
+   */
+  async function resolveLinkedAudio(sequence, videoTrackItem, diagnostics) {
+    let videoMediaPath = null;
+    try {
+      const videoProjectItem = await videoTrackItem.getProjectItem();
+      const videoClipItem = await ppro.ClipProjectItem.cast(videoProjectItem);
+      if (videoClipItem) videoMediaPath = await videoClipItem.getMediaFilePath();
+    } catch (e) {
+      diagnostics.push(`Could not read the video clip's media path for linked-audio matching: ${e.message || e}`);
+      return null;
+    }
+    if (!videoMediaPath) {
+      diagnostics.push("Video clip has no resolvable media path -- cannot search for linked audio.");
+      return null;
+    }
+
+    const videoStartTicks = ticks.ticksNumberOf(await videoTrackItem.getStartTime());
+    const videoEndTicks = ticks.ticksNumberOf(await videoTrackItem.getEndTime());
+
+    const audioTrackCount = await sequence.getAudioTrackCount();
+    for (let i = 0; i < audioTrackCount; i++) {
+      const track = await sequence.getAudioTrack(i);
+      const items = (await track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) || [];
+      for (const item of items) {
+        let itemMediaPath = null;
+        try {
+          const itemProjectItem = await item.getProjectItem();
+          const itemClipItem = await ppro.ClipProjectItem.cast(itemProjectItem);
+          if (itemClipItem) itemMediaPath = await itemClipItem.getMediaFilePath();
+        } catch (e) {
+          continue;
+        }
+        if (!itemMediaPath || itemMediaPath !== videoMediaPath) continue;
+
+        const itemStartTicks = ticks.ticksNumberOf(await item.getStartTime());
+        const itemEndTicks = ticks.ticksNumberOf(await item.getEndTime());
+        if (ticks.rangesOverlap(videoStartTicks, videoEndTicks, itemStartTicks, itemEndTicks)) {
+          diagnostics.push(`Linked audio resolved on audio track ${i + 1} (matching media file + overlapping range).`);
+          return { trackItem: item, trackIndex: i };
+        }
+      }
+    }
+    diagnostics.push("No audio track item with a matching media file and overlapping range was found.");
+    return null;
+  }
+
   async function checkOptionalFlag(clipProjectItem, methodName, diagnostics) {
     if (typeof clipProjectItem[methodName] !== "function") {
       diagnostics.push(`${methodName}() not available on this build -- skipped.`);
@@ -177,6 +242,34 @@
   async function classifyAndValidate(sequence, trackItem) {
     const diagnostics = [];
     const location = await locateTrackItem(sequence, trackItem, diagnostics);
+    let originalSelectionType = "audio";
+    let linkedAudioResolved = false;
+
+    if (location.mediaType === "unknown") {
+      return { eligible: false, clipName: "selected item", diagnostics, reason: "Could not determine what kind of item this is on the timeline." };
+    }
+
+    if (location.mediaType === "video") {
+      originalSelectionType = "video";
+      const linked = await resolveLinkedAudio(sequence, trackItem, diagnostics);
+      if (!linked) {
+        let videoClipName = "selected item";
+        try {
+          const videoProjectItem = await trackItem.getProjectItem();
+          if (videoProjectItem && videoProjectItem.name) videoClipName = videoProjectItem.name;
+        } catch (e) {
+          // Best-effort name only -- fall through with the generic label.
+        }
+        return { eligible: false, clipName: videoClipName, diagnostics, reason: "No linked audio found for this video clip." };
+      }
+      // From here on, every check runs against the resolved AUDIO item --
+      // the video item is never touched again (never disabled, never
+      // exported), per PRD 9.1/9.5.
+      trackItem = linked.trackItem;
+      location.trackIndex = linked.trackIndex;
+      location.mediaType = "audio";
+      linkedAudioResolved = true;
+    }
 
     // Best-effort name up front so every skip reason below can name the clip
     // (PRD 6.3: "Skipped: <name> - <reason>" beats a silent or generic skip).
@@ -187,18 +280,6 @@
       if (projectItem && projectItem.name) clipName = projectItem.name;
     } catch (e) {
       diagnostics.push(`getProjectItem() threw: ${e.message || e}`);
-    }
-
-    if (location.mediaType === "unknown") {
-      return { eligible: false, clipName, diagnostics, reason: "Could not determine what kind of item this is on the timeline." };
-    }
-    if (location.mediaType === "video") {
-      return {
-        eligible: false,
-        clipName,
-        diagnostics,
-        reason: "Video clips are not supported yet -- select the audio item directly (Phase 2 will add linked-audio support).",
-      };
     }
 
     if (!projectItem) {
@@ -262,14 +343,51 @@
       reason: null,
       clipProjectItem,
       projectItem,
+      trackItem,
       mediaPath,
       trackIndex: location.trackIndex,
       startTime,
       endTime,
       durationSeconds,
       clipName: projectItem.name,
+      originalSelectionType,
+      linkedAudioResolved,
       diagnostics,
     };
+  }
+
+  /*
+   * Clicking a video clip in Premiere's normal UI selects it AND its linked
+   * audio together (2 items), not just the video -- confirmed live (a
+   * selection that worked via Option-click, selecting the video alone,
+   * failed via a normal click with "2 clips are selected"). Collapses that
+   * specific case down to "the video item was selected" so
+   * classifyAndValidate's linked-audio resolution still runs, instead of
+   * being rejected outright as an unsupported multi-selection. Returns the
+   * video item, or null if these 2 items aren't actually a linked pair (a
+   * genuine unrelated 2-clip selection, which stays rejected).
+   */
+  async function collapseLinkedPairSelection(sequence, trackItems, diagnostics) {
+    const [a, b] = trackItems;
+    const typeA = detectMediaTypeByClass(a, diagnostics);
+    const typeB = detectMediaTypeByClass(b, diagnostics);
+    let videoItem = null;
+    let audioItem = null;
+    if (typeA === "video" && typeB === "audio") {
+      videoItem = a;
+      audioItem = b;
+    } else if (typeB === "video" && typeA === "audio") {
+      videoItem = b;
+      audioItem = a;
+    } else {
+      return null;
+    }
+
+    const linked = await resolveLinkedAudio(sequence, videoItem, diagnostics);
+    if (linked && (await sameTrackItem(linked.trackItem, audioItem))) {
+      return videoItem;
+    }
+    return null;
   }
 
   async function resolveSelection() {
@@ -286,18 +404,29 @@
     if (!trackItems || trackItems.length === 0) {
       throw new AuphonicPluginError(CATEGORY.SELECTION, "Nothing is selected on the timeline.");
     }
-    if (trackItems.length > 1) {
+
+    let trackItem = trackItems[0];
+    if (trackItems.length === 2) {
+      const collapseDiagnostics = [];
+      const videoItem = await collapseLinkedPairSelection(sequence, trackItems, collapseDiagnostics);
+      if (!videoItem) {
+        throw new AuphonicPluginError(
+          CATEGORY.UNSUPPORTED_CLIP,
+          `${trackItems.length} clips are selected. This version handles one clip at a time -- select just one and try again.`
+        );
+      }
+      trackItem = videoItem;
+    } else if (trackItems.length > 2) {
       throw new AuphonicPluginError(
         CATEGORY.UNSUPPORTED_CLIP,
         `${trackItems.length} clips are selected. This version handles one clip at a time -- select just one and try again.`
       );
     }
 
-    const trackItem = trackItems[0];
     const validation = await classifyAndValidate(sequence, trackItem);
     return { project, sequence, trackItem, ...validation };
   }
 
   window.Auphonic = window.Auphonic || {};
-  window.Auphonic.selection = { resolveSelection, classifyAndValidate, locateTrackItem };
+  window.Auphonic.selection = { resolveSelection, classifyAndValidate, locateTrackItem, resolveLinkedAudio };
 })();

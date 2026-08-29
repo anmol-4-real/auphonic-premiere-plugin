@@ -5,12 +5,13 @@
  * polling, and retry logic. They do nothing in Phase 1.
  *
  * Loaded as a plain <script> tag -- see the note at the top of
- * lib/secureStorage.js for why. Depends on window.Auphonic.paths, which must
- * be loaded first (see index.html's script order). Published on
- * window.Auphonic.jobModel.
+ * lib/secureStorage.js for why. Depends on window.Auphonic.paths and
+ * window.Auphonic.errors, which must be loaded first (see index.html's
+ * script order). Published on window.Auphonic.jobModel.
  */
 (function () {
   const paths = window.Auphonic.paths;
+  const { CATEGORY } = window.Auphonic.errors;
 
   function makeJobId(originalClipName) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "T").slice(0, 19);
@@ -20,7 +21,10 @@
 
   /*
    * fields: originalClipName, sequenceGuid, sourceProjectItemPath,
-   *         timelineStartTicks, timelineEndTicks, presetUuid
+   *         timelineStartTicks, timelineEndTicks, presetUuid, handlesSeconds,
+   *         originalSelectionType, linkedAudioResolved (all but the first
+   *         six are Phase 2 additions; each has a sensible default so
+   *         Phase 1 call sites that don't pass them still work).
    */
   function createJob(fields) {
     const jobId = makeJobId(fields.originalClipName);
@@ -35,7 +39,14 @@
       sourceProjectItemPath: fields.sourceProjectItemPath,
       timelineStartTicks: fields.timelineStartTicks,
       timelineEndTicks: fields.timelineEndTicks,
-      handlesSeconds: 0,
+      handlesSeconds: fields.handlesSeconds || 0,
+      handlesActualLeftSeconds: 0,
+      handlesActualRightSeconds: 0,
+      handlesClampWarnings: [],
+      originalSelectionType: fields.originalSelectionType || "audio",
+      linkedAudioResolved: Boolean(fields.linkedAudioResolved),
+      collisionDetected: false,
+      collisionDecision: null,
       sourceMode: "clean-source",
       presetUuid: fields.presetUuid,
       outputFormat: "wav",
@@ -75,6 +86,16 @@
     return job;
   }
 
+  /* Phase 2: pre-flight collision decline, or any other pre-upload cancel --
+   * distinct from markFailed since nothing actually went wrong, the user
+   * just chose not to proceed. No credits are ever spent before this point. */
+  function markCanceled(job, reason) {
+    job.status = "canceled";
+    job.errorCategory = CATEGORY.CANCELED;
+    job.errorMessage = reason;
+    return job;
+  }
+
   window.Auphonic = window.Auphonic || {};
-  window.Auphonic.jobModel = { createJob, saveJob, loadJob, markStatus, markFailed, makeJobId };
+  window.Auphonic.jobModel = { createJob, saveJob, loadJob, markStatus, markFailed, markCanceled, makeJobId };
 })();

@@ -12,18 +12,50 @@
  * nothing there to shift. When a track already exists below, use overwrite,
  * per the PRD's explicit preference, to avoid rippling the timeline.
  *
- * Collision detection on an existing track below (PRD 9.5's "prompt rather
- * than assume") is explicitly out of scope for Phase 1 -- overwrite will
- * silently replace whatever's there. Flagged in the job record's diagnostics,
- * not hidden.
+ * Phase 2 (PRD 9.5's "prompt rather than assume"): collision detection on an
+ * existing destination track is now available via findCollisionOnAudioTrack,
+ * built on the same track.getTrackItems() primitive selection.js already
+ * uses to enumerate tracks -- no such API existed anywhere in this project
+ * or in Adobe's own reference sample before this (confirmed by grep). The
+ * caller (panel.js) runs this pre-flight, before any credits are spent, and
+ * if it finds a collision, passes forceNewTrackBelow=true to importAndPlace
+ * rather than letting overwrite silently clobber whatever's there.
  *
  * Loaded as a plain <script> tag -- see the note at the top of
- * lib/secureStorage.js for why. Depends on window.Auphonic.errors, which
- * must be loaded first. Published on window.Auphonic.insertion.
+ * lib/secureStorage.js for why. Depends on window.Auphonic.errors and
+ * window.Auphonic.ticks, which must be loaded first. Published on
+ * window.Auphonic.insertion.
  */
 (function () {
   const ppro = require("premierepro");
   const { CATEGORY, AuphonicPluginError, wrap } = window.Auphonic.errors;
+  const ticks = window.Auphonic.ticks;
+
+  /*
+   * Does anything already sit in [startTime, endTime) on the given audio
+   * track? Returns the colliding track item, or null if the track doesn't
+   * exist yet (no track = nothing to collide with) or is clear in that range.
+   * Overlap, not exact-match -- a collision doesn't require identical
+   * boundaries, just any shared time.
+   */
+  async function findCollisionOnAudioTrack(sequence, audioTrackIndex, startTime, endTime) {
+    const audioTrackCount = await sequence.getAudioTrackCount();
+    if (audioTrackIndex >= audioTrackCount) return null;
+
+    const track = await sequence.getAudioTrack(audioTrackIndex);
+    const items = (await track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) || [];
+    const targetStart = ticks.ticksNumberOf(startTime);
+    const targetEnd = ticks.ticksNumberOf(endTime);
+
+    for (const item of items) {
+      const itemStart = ticks.ticksNumberOf(await item.getStartTime());
+      const itemEnd = ticks.ticksNumberOf(await item.getEndTime());
+      if (ticks.rangesOverlap(targetStart, targetEnd, itemStart, itemEnd)) {
+        return item;
+      }
+    }
+    return null;
+  }
 
   function sanitizeFilenamePart(name) {
     const cleaned = String(name || "").replace(/[\/:*?"<>|]/g, "_").trim();
@@ -63,6 +95,7 @@
     outputFilePath,
     originalClipName,
     presetName,
+    forceNewTrackBelow = false,
   }) {
     // Adobe's own sample calls importFiles(filePaths, true, undefined, false)
     // -- confirmed live to throw "Illegal Parameter type" on this build.
@@ -105,9 +138,14 @@
       // Non-fatal.
     }
 
-    const targetTrackIndex = originalTrackIndex + 1;
+    const preferredTrackIndex = originalTrackIndex + 1;
     const audioTrackCount = await sequence.getAudioTrackCount();
-    const needsNewTrack = targetTrackIndex >= audioTrackCount;
+    // forceNewTrackBelow (set when the pre-flight collision check found
+    // something already on preferredTrackIndex) always targets a track index
+    // equal to the current count -- the only index auto-creation is
+    // confirmed to work at (HANDOFF.md) -- rather than the colliding index.
+    const needsNewTrack = forceNewTrackBelow || preferredTrackIndex >= audioTrackCount;
+    const targetTrackIndex = needsNewTrack ? audioTrackCount : preferredTrackIndex;
     const sequenceEditor = ppro.SequenceEditor.getEditor(sequence);
 
     let placeOk = false;
@@ -151,5 +189,10 @@
   }
 
   window.Auphonic = window.Auphonic || {};
-  window.Auphonic.insertion = { importAndPlace, buildOutputName, findProjectItemByMediaPath };
+  window.Auphonic.insertion = {
+    importAndPlace,
+    buildOutputName,
+    findProjectItemByMediaPath,
+    findCollisionOnAudioTrack,
+  };
 })();

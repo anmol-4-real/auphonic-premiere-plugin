@@ -16,6 +16,9 @@
         "https://auphonic.com",
         "https://*.auphonic.com"
       ]
+    },
+    "launchProcess": {
+      "schemes": ["https"]
     }
   },
   "entrypoints": [

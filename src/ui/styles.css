@@ -94,3 +94,24 @@ button:disabled {
 .warn { color: #e8b339; }
 .dim  { color: #8a8a8a; }
 .hidden { display: none; }
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 3px;
+  font-size: 11px;
+  color: #c4c4c4;
+  cursor: pointer;
+}
+.checkbox-row input {
+  width: auto;
+  margin: 0;
+}
+#collisionPrompt {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #e8b339;
+  border-radius: 3px;
+  background: #33301f;
+}

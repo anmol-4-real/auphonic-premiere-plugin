@@ -19,6 +19,7 @@
     DOWNLOAD_FAILED: "Download failed",
     IMPORT_FAILED: "Premiere import failed",
     INSERTION_COLLISION: "Timeline insertion collision",
+    CANCELED: "Canceled by user",
   };
 
   class AuphonicPluginError extends Error {

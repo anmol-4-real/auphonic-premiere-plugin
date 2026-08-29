@@ -1,6 +1,6 @@
-# Auphonic Premiere Plugin — Handoff for Phase 2
+# Auphonic Premiere Plugin — Handoff for Phase 3
 
-Paste this entire document as your first message in a new session to continue this project. It contains everything learned across setup, the spike phase, and the full Phase 1 build (including three real bugs found and fixed via live testing), so a new session can start Phase 2 immediately without repeating any research.
+Paste this entire document as your first message in a new session to continue this project. It contains everything learned across setup, the spike phase, and the full Phase 1 and Phase 2 builds (including six real bugs found and fixed via live testing across the two phases), so a new session can start Phase 3 immediately without repeating any research.
 
 ## What this project is
 
@@ -8,10 +8,13 @@ Building a UXP plugin for Adobe Premiere Pro 2026 that lets an editor select one
 
 The project's product owner (Kan, Studio Production Manager) is **non-technical**; the person actually running these Claude Code sessions (Anmolpreet) is technical and is building this on Kan's behalf. This distinction matters: talk to the chat operator (Anmolpreet) at a normal technical level, but everything the *plugin itself* surfaces — panel copy, button labels, error messages — must stay plain-language, since Kan is who actually uses the finished tool.
 
-The original build plan (setup, spikes, and the Phase 1 breakdown — Phase 2 is not covered by it) was approved and lives at:
+The original build plan (setup, spikes, and the Phase 1 breakdown) was approved and lives at:
 `/Users/anmolpreet/.claude/plans/users-anmolpreet-downloads-auphonic-pre-nested-mccarthy.md`
 
-**No detailed, approved plan exists yet for Phase 2** — unlike Phase 1, which had a full step-by-step plan written and approved before any code was touched. The PRD only describes Phase 2's scope at a high level (see "Phase 2 scope" below, which collects every relevant PRD detail so a new session doesn't have to re-read the whole PRD). Consider drafting and getting a short Phase 2 plan approved first, the same way Phase 1 was handled, rather than jumping straight to code — this matches how the project has worked so far and the user has explicitly valued that thoroughness.
+The Phase 2 plan (handles, linked-audio resolution, collision detection, open-in-browser) was drafted and approved the same way before any Phase 2 code was touched, and lives at:
+`/Users/anmolpreet/.claude/plans/radiant-weaving-valiant.md`
+
+**No detailed, approved plan exists yet for Phase 3** — unlike Phase 1 and Phase 2, which both had a full step-by-step plan written and approved before any code was touched. The PRD only describes Phase 3's scope at a high level (see "Phase 3 scope" below, which collects every relevant PRD detail so a new session doesn't have to re-read the whole PRD). Consider drafting and getting a short Phase 3 plan approved first, the same way Phase 1 and Phase 2 were handled, rather than jumping straight to code — this matches how the project has worked so far and the user has explicitly valued that thoroughness.
 
 ## Environment
 
@@ -23,14 +26,15 @@ The original build plan (setup, spikes, and the Phase 1 breakdown — Phase 2 is
 
 ## Version control
 
-The project is on GitHub, connected and pushed, currently fully up to date (nothing uncommitted as of this write-up — verify with `git status` before trusting that):
+The project is on GitHub, connected and pushed:
 **https://github.com/anmol-4-real/auphonic-premiere-plugin** (private repo)
 
 - `gh` (GitHub CLI) is installed at `~/.local/bin/gh` (not on PATH by default — run `export PATH="$HOME/.local/bin:$PATH"` first, or use the full path). Already authenticated as `anmol-4-real`; git uses `gh` as its credential helper, so `git push`/`git pull` work without further login.
 - Local git identity for this repo only: name `Anmolpreet`, email `anmolpreet@hackerrank.com`.
 - `.gitignore` excludes: `reference/` (Adobe's sample repo — re-clone with `git clone https://github.com/AdobeDocs/uxp-premiere-pro-samples.git reference/uxp-premiere-pro-samples` if needed again), `Test Exports/`, `.claude/`, `.DS_Store`.
 - **User wants to be asked before every commit, and separately before every push** — don't do either proactively. This has been asked and answered explicitly; don't re-ask the general preference, just follow it (asking about each *specific* commit/push is still expected — the preference is about cadence, not a one-time blanket approval).
-- Commit history: (1) spike plugin + earliest handoff doc, (2) first full Phase 1 build (written but not yet live-tested at that point), (3) all fixes found during live testing (module loading, media-type detection, `importFiles` args) — this is the current `main` HEAD, and it's the one that reflects a fully working, live-verified Phase 1.
+- Commit history as of the `main` HEAD reflecting a fully working, live-verified Phase 1: (1) spike plugin + earliest handoff doc, (2) first full Phase 1 build (written but not yet live-tested at that point), (3) all fixes found during live testing (module loading, media-type detection, `importFiles` args).
+- **The full Phase 2 build (code + this updated HANDOFF.md) is complete and live-verified as of this write-up but has not yet been committed** — verify with `git status` before trusting that, and ask the user before committing/pushing it, per the standing preference above.
 
 ## Project history
 
@@ -81,6 +85,25 @@ Built at the project root: `manifest.json`, `package.json`, `jsconfig.json`, `in
 
 **Deliberate scope decisions made while building Phase 1** (see "Decisions already locked in" below for the full list) — most relevant to know before starting Phase 2: video clips are currently rejected outright with a named reason rather than attempting any linked-audio resolution (that's exactly what Phase 2 needs to add), and there is no collision detection at all yet on the destination track (also exactly what Phase 2 needs to add).
 
+### 4. Phase 2 build (done, fully live-verified)
+
+Built on top of Phase 1: two new files (`src/core/ticks.js` — shared tick-arithmetic/overlap helpers, `src/core/handles.js` — clamp/widen math) plus edits to `src/core/{selection,insertion,export,jobModel,errors}.js`, `src/ui/panel.js`, `index.html`, `src/ui/styles.css`, and `manifest.json`. A plan was drafted and approved before any code was written, mirroring Phase 1 (see `radiant-weaving-valiant.md` above).
+
+**Confirmed working end to end, in real Premiere, on real clips:**
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Handles, with clamping and warnings | ✅ Confirmed — real widened audio audible on both edges of a clip that had real trimmed head/tail room to give back; a fully untrimmed clip correctly clamps to zero extra instead of crashing |
+| 2 | Video clip → linked-audio resolution | ✅ Confirmed — both Option-click (video alone, 1 item) and a normal click (video + its linked audio, 2 items) resolve correctly; full pipeline (export → upload → process → download → place → disable original, video left untouched) completed successfully for a linked-audio job |
+| 3 | Insertion collision detection + prompt | ✅ Confirmed — prompt fires correctly on a real overlap and stays silent on a real non-overlap; Cancel leaves the timeline completely untouched with a canceled job record and no credits spent; Confirm creates a new track and inserts there instead of overwriting. Accepted limitation: the new track always lands at the very end of the track list (the only track-index auto-creation confirmed reliable — see below), so on a sequence that already has several tracks the result can end up several tracks below the original with empty tracks in between. Correct, just not visually adjacent — no API for inserting a track at an arbitrary position was ever found. |
+| 4 | Open production in browser | ✅ Confirmed — `https://auphonic.com/engine/upload/{uuid}` opens the correct, specific production's page |
+
+**Three real bugs found and fixed during live testing** (same pattern as Phase 1 every time: a plausible assumption didn't hold on this exact build, diagnosed and fixed from live evidence, not guessed at twice):
+
+1. **`createInsertProjectItemAction` throws `Invalid parameter` when handed a `ClipProjectItem` cast object instead of the plain `ProjectItem`.** The handles export path passed the cast object (used elsewhere in the same code for `isProxy()`/`isMulticam()`/`getMediaFilePath()`) directly into the insert action — the same class of argument-type strictness already seen with `encodeFile`/`importFiles` in Phase 1. **Fixed** by passing the plain `ProjectItem` instead, matching what `insertion.js`'s own working insert call already uses.
+2. **A clip with zero untrimmed source media (already using its source file's exact full range) needs its left handle clamped to zero, and that clamp cannot depend solely on `ppro.Metadata.getProjectColumnsMetadata`.** That API's behavior on this build was never confirmed and evidently didn't produce a working clamp live — an untrimmed clip's left handle went uncorrected past zero and crashed trying to set a negative in-point ("Invalid parameter" again, a different call site than bug #1). **Fixed** two independent ways: the left-handle clamp now always checks directly against `trackItem.getInPoint()` (already confirmed reliable, source-relative to media start — see below) regardless of whether the Metadata lookup succeeds, so this exact case can't be missed again; and separately, `export.js`'s widen step now attempts each side independently and backs off (halves the requested amount, retries) rather than throwing if Premiere rejects it — a second safety net for any clamp that's still wrong for some other reason.
+3. **Clicking a video clip with linked audio via a normal click in Premiere selects both the video and its linked audio together (2 track items), not the video alone.** Phase 1's existing "one clip at a time" guard rejected this pair before Phase 2's linked-audio resolution ever ran — confirmed live: Option-click (selects just the video) worked, a normal click was rejected as "2 clips are selected." **Fixed** by detecting this specific shape (one video item plus its own already-linked audio item, confirmed via the same media-path-plus-overlap check used for linked-audio resolution itself) and collapsing it down to "the video was selected" before the one-clip-at-a-time check runs, rather than loosening that check to allow arbitrary multi-selections.
+
 ## Confirmed, real API patterns (verified live on this exact machine — use these directly, don't re-derive)
 
 **Module loading:**
@@ -92,6 +115,8 @@ Built at the project root: `manifest.json`, `package.json`, `jsconfig.json`, `in
 - `TickTime.ticksNumber` (a plain number property) is the real way to read raw ticks off a TickTime object — not `.ticks`. Confirmed by reading Adobe's own sample (`sequence.ts`'s handles-calculation code, ~line 392), not by live testing directly, but consistent with everything else observed.
 - **Media type**: `trackItem instanceof ppro.VideoClipTrackItem` / `instanceof ppro.AudioClipTrackItem` correctly identifies which kind of track item is selected (confirmed live). `.cast()` does **not** exist on either of those classes on this build (unlike `ClipProjectItem.cast()`, which does exist and works — confirmed live in the spike phase). Do NOT infer media type by matching timeline position across tracks — a video clip's linked audio occupies the identical position by definition, and this reliably misclassifies it (see bug #2 above). **Directly relevant to Phase 2's linked-audio resolution**: the PRD (9.1) says to locate a video clip's linked audio by "matching the same project item plus an overlapping timeline range" — `getProjectItem()` on both the video and its linked audio trackItem should return the same underlying media reference, so that plus an overlapping-range check (not an exact-match check, which is what caused bug #2) is the right combination once you already know, via `instanceof`, that you're specifically looking for the *other* type of trackItem.
 - Track index for a given track item is derived by walking `sequence.getAudioTrack(i)`/`getVideoTrack(i)` (matching an item's own list) and matching by exact tick position (no confirmed `getTrackIndex()` method exists, despite the PRD asserting one) — this part is fine and unchanged, only the media-*type* determination changed in the bug-2 fix.
+- **Phase 2, confirmed live**: clicking a video clip with linked audio via a *normal click* in Premiere selects both the video and its linked audio together — a 2-item selection, not the video alone. Only Option-click selects the video by itself as a single item. Any code path that rejects multi-item selections needs to special-case this exact shape (one video item plus its own already-linked audio item, confirmed via the same media-path-plus-overlap check used for linked-audio resolution) *before* rejecting, or every normal video-clip click gets misclassified as an unsupported multi-selection (this is Phase 2 bug #3 below).
+- **Phase 2, confirmed live**: linked-audio resolution works via `getProjectItem()` → `ppro.ClipProjectItem.cast()` → `getMediaFilePath()` equality (same underlying media file) plus an *overlapping* (not exact-match) timeline range — exactly the combination HANDOFF previously predicted, now confirmed end-to-end including a full export/upload/process/download/place/disable pipeline on a real linked pair.
 
 **Export (subsequence approach):**
 - `EncoderManager.encodeFile()` takes exactly 5 args; trimmed export via `encodeFile`/`encodeProjectItem` with explicit in/out silently exports the whole file regardless, matching a real Adobe-acknowledged bug class. Working approach: narrow the sequence's own In/Out via `sequence.createSetInPointAction(tick)`/`createSetOutPointAction(tick)` (wrapped in `project.lockedAccess(() => project.executeTransaction((compoundAction) => {...}, "description"))`), call `sequence.createSubsequence(true)` to get a new Sequence scoped to exactly that range, then `EncoderManager.getManager().exportSequence(subsequence, ppro.Constants.ExportType.IMMEDIATELY, outputPath, presetPath)` to export the whole subsequence (which, by construction, is just the trim). Restore the original sequence In/Out immediately after creating the subsequence — it's independent from then on. Delete the subsequence afterward with `project.deleteSequence(subsequence)` and check its return value — a resolved promise doesn't guarantee real deletion. Call `project.setActiveSequence(sequence)` before deleting, since creating a subsequence makes it the active tab.
@@ -105,14 +130,21 @@ Built at the project root: `manifest.json`, `package.json`, `jsconfig.json`, `in
 - **Track auto-creation is confirmed working only for `createInsertProjectItemAction`** (inserting at a track index equal to the current track count auto-creates a new track — verified live in the spike phase, audio track count went 4→5). No such confirmation exists for `createOverwriteItemAction` at an out-of-range index, and no separate "addTrack" method exists anywhere. Phase 1's placement logic therefore branches: use insert (with `limitedShift: true`, to avoid rippling) only when no track exists below the original; use overwrite (per the PRD's explicit preference, to avoid rippling) when a track already exists below. On a brand-new empty track these two have identical effect anyway, since there's nothing to shift.
 - `trackItem.createSetDisabledAction(true)` confirmed working (Adobe's own sample never demonstrates this at all — it was a complete unknown before live testing in the spike phase), and `trackItem.isDisabled()` confirmed as the readback getter.
 - `projectItem.createSetNameAction(newName)` is the real rename method (not `setName()`/`createRenameAction()`).
-- **Collision detection (needed for Phase 2) has no confirmed API at all yet** — nothing in this project has ever checked whether a destination track already has content at a given time range. This will need its own research/spike-style verification before Phase 2 builds on it; don't assume a method exists without checking the reference sample and/or testing live first.
+- **`createInsertProjectItemAction`'s first argument must be a plain `ProjectItem`, not a `ClipProjectItem` cast (Phase 2, confirmed live)** — passing the cast object throws `Invalid parameter` (Phase 2 bug #1 below). Cast objects (`ppro.ClipProjectItem.cast(...)`) are for calling clip-specific methods (`isProxy()`, `getMediaFilePath()`, `isMulticam()`, etc.) only; hand the plain `ProjectItem` to any placement/insert action instead.
+- **Collision detection (Phase 2, confirmed live) — no proven API exists for checking a track's content directly**, so it's built from the same `track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)` primitive already used for track enumeration, checked for range overlap (not exact match). Confirmed live: fires correctly on a real overlap, stays silent on a real non-overlap. Forcing a new track always targets an index equal to the *current total track count* (the only index confirmed to auto-create reliably — see above), never the colliding index itself — works, but on a sequence that already has several tracks the result can land several tracks below the collision with empty tracks in between. No API for inserting a track at an arbitrary middle position was ever found; accepted as a known limitation rather than guessed at.
+
+**Handles (Phase 2, confirmed live):**
+- The scratch-subsequence-widen approach works: create a disposable subsequence (same narrow-then-`createSubsequence(true)` step already proven for plain export), disable whatever seed content got copied into it, insert a *second* placement of the same clip's `ProjectItem` on a fresh auto-created track far past any existing content, widen *that copy's* in/out (never the original clip's), narrow the subsequence to bracket exactly the widened copy, then export — confirmed by listening to the exported file, real audio audible beyond the original clip's boundaries on both edges.
+- `trackItem.getInPoint()`/`getOutPoint()` are the reliable source for how much of a clip's own source media is already in use — use these directly for the left-handle clamp (available head-room = `getInPoint()`'s tick value, since it's already source-relative to media start). Do **not** rely on `ppro.Metadata.getProjectColumnsMetadata`'s `Column.Intrinsic.MediaStart`/`MediaEnd` columns as the sole source for this — its behavior on this build was never confirmed to produce a working clamp and a fully untrimmed clip crashed live when it was the only guard (Phase 2 bug #2 below). That Metadata lookup is still used as a best-effort estimate for the *right* handle only (there's no equally simple proven source for total media length there), backed by a real safety net regardless: the actual widen step attempts the requested amount and backs off (halves, retries) if Premiere rejects it, rather than trusting any pre-computed clamp as authoritative.
+- `ppro.TickTime.createWithSeconds(seconds)` confirmed live as the correct way to convert a plain seconds value into ticks.
 
 **secureStorage & local files:**
 - `uxp.storage.secureStorage.setItem(key, value)` / `.getItem(key)` (resolves `Uint8Array`) / `.removeItem(key)` — all confirmed working, all async.
 - `TextDecoder` does not exist in this UXP host (confirmed live — a genuine environment gap). Decode the `Uint8Array` from `secureStorage.getItem` manually — a working manual UTF-8 decoder exists in `src/lib/secureStorage.js`'s `decodeUtf8` function, reuse it as-is.
 - Reading a local file's binary bytes: `file.read({ format: uxp.storage.formats.binary })` → `ArrayBuffer`. Omitting the `format` option defaults to UTF-8 text and **corrupts binary data** — always pass it explicitly for audio files. `{ format: uxp.storage.formats.utf8 }` is the confirmed-working counterpart for text (job JSON files).
 - Build every path via a real Folder/File entry's own `.nativePath` (e.g. `folder.createFile(name, {overwrite: true})`), never by string-concatenating paths — this is how `src/lib/paths.js` is structured throughout.
-- `uxp.shell.openPath()` (used for the "Reveal Cache Folder" button) is **not a confirmed real API on this build** — it doesn't throw, but it also doesn't actually open Finder; the button degrades gracefully to just printing the path instead, which is accepted as-is, not chased further. Nothing in Adobe's own sample repo demonstrates this API either. **Relevant to Phase 2's "open production in browser" feature**: the confirmed-real pattern for opening something externally is `require("uxp").shell.openExternal(url)` (found in the reference repo's `oauth-workflow-sample/index.js`, used to open a login URL) — this is a *different* function than `openPath` and has real precedent, so it's the one to try first for opening an Auphonic production page, not `openPath`. The exact URL format for an Auphonic production's own web page has not been researched/confirmed anywhere in this project yet.
+- `uxp.shell.openPath()` (used for the "Reveal Cache Folder" button) is **not a confirmed real API on this build** — it doesn't throw, but it also doesn't actually open Finder; the button degrades gracefully to just printing the path instead, which is accepted as-is, not chased further. Nothing in Adobe's own sample repo demonstrates this API either. `require("uxp").shell.openExternal(url)` (found in the reference repo's `oauth-workflow-sample/index.js`) is the confirmed-real pattern for opening something externally instead — used for Phase 2's "open production in browser" (see below), confirmed live and working.
+- **Auphonic production page URL, confirmed live (Phase 2)**: `https://auphonic.com/engine/upload/{uuid}` opens the correct, specific production's page in a browser. Not documented anywhere on auphonic.com (checked `/developers`, the API details help page, and the web-production help page — none show it), but confirmed working directly via `shell.openExternal`.
 
 **Auphonic API (all confirmed live end-to-end, including the real Phase 1 pipeline, not just the spike):**
 1. `POST /api/productions.json` with `{preset: <uuid or slug>, metadata: {title}, output_basename: <safe_name>, output_files: [{format: "wav"}]}` → response `data.uuid`. `output_files` must be passed explicitly — omitting it silently returns the preset's own default output (an MP3 in testing), not the WAV Phase 1 requires.
@@ -131,49 +163,36 @@ Built at the project root: `manifest.json`, `package.json`, `jsconfig.json`, `in
 - Effects mode (Phase 5) is **not needed** — audio is always cleaned from raw source. Dropped entirely from the plan.
 - WAV is the default and only output format so far (Phase 1's only option; MP3/AAC are explicitly Phase 3 scope).
 - Windows testing is planned but has been deferred through all of Phase 1; still fully untouched.
-- No `command` entrypoint in the manifest — only the panel, so the cost-estimate confirmation gate always has a place to show itself before any credits are spent. Revisit if Phase 2 or later wants a faster path in, but keep the confirmation gate wherever that path leads.
-- A selected video clip is currently rejected outright (named reason) rather than attempting linked-audio resolution — **this is exactly Phase 2's job to change.**
-- No collision detection on the destination track exists yet — **this is exactly Phase 2's job to add.**
+- No `command` entrypoint in the manifest — only the panel, so the cost-estimate confirmation gate always has a place to show itself before any credits are spent. Revisit if Phase 3 or later wants a faster path in, but keep the confirmation gate wherever that path leads.
+- Video clips are now resolved to their linked audio automatically (Phase 2, confirmed live, both the Option-click single-item case and the normal 2-item linked-selection case).
+- Collision detection on the destination track now exists and is confirmed live (Phase 2) — see the accepted track-placement limitation above (new track always appends at the end, not necessarily adjacent to the collision).
+- Handles now exist and are confirmed live (Phase 2), off by default, 2.0s when enabled, with clamping on both the sequence-start and source-media sides.
 - Bin creation and label colors are skipped entirely (Phase 3 scope).
-- Multi-selection is rejected with a message rather than silently processing only the first item (unchanged for Phase 2 — batch/multi-select is Phase 4 scope).
+- Multi-selection is still rejected with a message rather than silently processing only the first item, **except** for the one specific shape Phase 2 now unwraps (a video clip plus its own linked audio, selected together as 2 items) — genuine unrelated multi-clip selections are still rejected. Batch/multi-select proper is Phase 4 scope.
 
-## Phase 2 scope (not yet started — no plan file exists yet, only this PRD-derived summary)
+## Phase 3 scope (not yet started — no plan file exists yet, only this PRD-derived summary)
 
-Per PRD section 11's phase list, Phase 2 ("Editing ergonomics") covers four things. "Reveal cache" was pulled forward into Phase 1 already (its housekeeping buttons exist and are confirmed working, minus the Finder-opening part — see above), so it's not listed again below.
+Per PRD section 11's phase list, Phase 3 ("Organization and formats") covers three things.
 
-**1. Handles, with clamping and warnings (PRD 9.6, defaults in PRD 12):**
-- Handles default to **off**; when enabled, default is **2.0 seconds**.
-- **Handles off** (current Phase 1 behavior): export the exact selected timeline duration, insert at the exact same start and duration underneath.
-- **Handles on**: export the selected duration *plus* handle seconds before and after; insert starting handle-seconds *before* the original start. Worked example from the PRD:
+**1. Label colors (PRD 9.5 step 3, "Apply the selected label color (Phase 3)"):**
+- No further detail exists in the PRD beyond that single line — which label color, and whether it's fixed or user-selectable, is an open design question worth settling early in the Phase 3 planning session rather than assuming.
+
+**2. "Auphonic Processed Audio" bin (PRD 12's defaults: "Bin: On, \"Auphonic Processed Audio\""):**
+- Every processed result should land in a bin with this exact name, created if it doesn't already exist.
+- No bin-creation API has been researched or tested anywhere in this project yet — needs its own live-verification pass before UI is built on top of it, per this project's standing rule.
+
+**3. MP3 and AAC output options (PRD 9.4):**
+- Additional formats requested alongside WAV, at no extra Auphonic cost (PRD section 5: "Multiple output formats generated from a single production cost nothing extra"):
+  ```json
+  { "format": "mp3", "bitrate": "192" }
+  { "format": "aac", "bitrate": "192", "ending": "m4a" }
   ```
-  Original clip:      00:10:00:00 to 00:10:12:00
-  Handles:            2 sec
-  Exported range:     00:09:58:00 to 00:10:14:00
-  Inserted clip:      starts at 00:09:58:00, underneath the original
-  Original disabled:  still spans 00:10:00:00 to 00:10:12:00
-  ```
-- **Clamping**: when a handle would exceed the available source media, or would place the clip before the sequence start, clamp it and warn — e.g. "Left handle reduced from 2.0s to 0.6s because source media starts there."
-- Handles are not meaningful for whole-clip Project-panel jobs (Phase 6 scope) — ignore them there, with a UI note, when that phase eventually exists.
-- Adobe's sample repo has a directly relevant worked function: `addHandlesToTrackItem` in `reference/uxp-premiere-pro-samples/sample-panels/premiere-api/src/sequence.ts` (~line 318) — it deals with the same source/sequence-timebase-ratio math this feature will need. Worth reading before implementing, though (per this project's whole hard-won lesson) it still needs to be verified live on this exact build, not trusted blindly.
+- WAV remains the default; these become additional selectable output formats, not replacements. The existing `output_files` array in `auphonicClient.createProduction` already accepts multiple entries — Phase 1/2 just never populated more than one.
 
-**2. Video clip selection with linked-audio resolution (PRD 9.1, 9.5):**
-- Currently a selected video clip is rejected outright. Phase 2 needs to instead: locate the associated audio item by matching the same project item plus an *overlapping* timeline range (not an exact match — exact-match-by-position is precisely the bug that had to be fixed in Phase 1's own media-type detection, see bug #2 above, so don't reuse that logic here without adjusting it).
-- Process and disable only the audio item. **Never touch the video item** — disabling video would hide the picture.
-- For grouped selections and video clips with linked audio generally: disable only the original audio item(s), never video.
-
-**3. Insertion collision detection and prompt (PRD 9.5):**
-- Currently: none at all. `createOverwriteItemAction`/insert will silently place the clip, replacing whatever's already there on an existing destination track.
-- Needed: detect whether the destination track already has media at the target time range, and if so, prompt rather than assume — PRD's suggested wording: "Destination track already has media at this time. Create a new track underneath and insert there?"
-- No API for checking track content at a given range has been researched or tested anywhere in this project yet — this needs its own verification pass (read the reference sample for a `getTrackItems`-based overlap check, or something similar; test live before building UI on top of it, per this project's standing rule).
-
-**4. Open production in browser (PRD, implied by Phase 2's "editing ergonomics" framing, not spelled out in exhaustive detail elsewhere):**
-- Confirmed-real building block: `require("uxp").shell.openExternal(url)` (see "Confirmed API patterns" above) — a *different*, better-precedented function than the `openPath` that didn't pan out for the cache-folder button.
-- The actual URL format for an Auphonic production's own web page has not been researched or confirmed. Look this up on Auphonic's own site/docs (or infer it from the production data already being fetched) before building the button — don't guess the URL pattern.
-
-**Also worth deciding early in the Phase 2 session, not carried over from any prior decision:** whether to draft and get a short Phase 2 plan approved first (mirroring how Phase 1 was handled) before writing any code, given no such plan exists yet.
+**Also worth deciding early in the Phase 3 session, mirroring Phase 1 and Phase 2:** whether to draft and get a short Phase 3 plan approved first before writing any code, given no such plan exists yet.
 
 ## How to work with this user
 
-Verify every Premiere/UXP API claim live before building UI around it — this project has hit this lesson repeatedly (encodeFile's arg count, `WorkAreaUtils` missing, `require()` module resolution, `AudioClipTrackItem.cast()` missing, `importFiles`'s real arg count) and every single time, live evidence settled it in one pass while guessing would have taken several rounds. When something fails, add a diagnostic that proves the *cause* — a console log, a live shape dump of the real object (`constructor.name`, `Object.getOwnPropertyNames`, relevant `ppro` keys) — rather than guessing at a fix a second time. This exact technique (a live shape dump) is what resolved the media-type bug during Phase 1's own testing, and is very likely to be needed again for Phase 2's collision-detection research.
+Verify every Premiere/UXP API claim live before building UI around it — this project has hit this lesson repeatedly across both phases (encodeFile's arg count, `WorkAreaUtils` missing, `require()` module resolution, `AudioClipTrackItem.cast()` missing, `importFiles`'s real arg count, `createInsertProjectItemAction` rejecting a `ClipProjectItem` cast, a Metadata-based clamp that didn't fire, a video clip's normal-click selection actually being 2 items) and every single time, live evidence settled it in one pass while guessing would have taken several rounds. When something fails, add a diagnostic that proves the *cause* — a console log, a live shape dump of the real object (`constructor.name`, `Object.getOwnPropertyNames`, relevant `ppro` keys) — rather than guessing at a fix a second time. This exact technique is very likely to be needed again for Phase 3's bin-creation research.
 
 The user has been extremely patient through a long debugging process and has explicitly asked for thoroughness over speed — keep that standard. Ask before every commit and, separately, before every push (see Version control above) — this has been asked and answered once; don't re-ask the general preference, just follow it for each specific action. Talk to the chat operator (Anmolpreet, technical) normally; keep the plugin's own UI copy (button labels, error/status messages) plain-language, since Kan (the non-technical product owner) is the one who actually uses the finished panel.

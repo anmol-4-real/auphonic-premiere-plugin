@@ -19,9 +19,23 @@
 
 <section class="panel-block hidden" id="processSection">
   <h2>Process Selected Clip</h2>
-  <p class="hint">Select exactly one audio clip on your timeline in Premiere, then click below.</p>
+  <p class="hint">Select exactly one audio clip on your timeline in Premiere, then click below. Selecting a video clip with sound now works too -- its linked audio is used automatically.</p>
+
+  <label class="checkbox-row" for="handlesEnabled">
+    <input type="checkbox" id="handlesEnabled" />
+    Add handles (a little extra audio before and after the clip)
+  </label>
+  <label for="handlesSecondsInput">Handle length (seconds)</label>
+  <input id="handlesSecondsInput" type="number" min="0" step="0.5" value="2.0" />
+
   <button id="checkSelectionBtn">Check Selected Clip</button>
   <div class="status-line" id="selectionStatus"><span class="dim">Not checked yet.</span></div>
+
+  <div id="collisionPrompt" class="hidden">
+    <div class="status-line" id="collisionText"></div>
+    <button id="collisionConfirmBtn">Create New Track &amp; Insert</button>
+    <button id="collisionCancelBtn" class="secondary">Cancel</button>
+  </div>
 
   <div id="estimateBox" class="hidden">
     <div class="status-line" id="estimateText"></div>
@@ -32,6 +46,7 @@
   <div id="progressBox" class="hidden">
     <div class="status-line" id="progressStatus"></div>
     <div class="log" id="progressLog"></div>
+    <button id="openProductionBtn" class="secondary hidden">Open in Auphonic</button>
   </div>
 </section>
 
@@ -52,10 +67,12 @@
 <script src="src/lib/secureStorage.js"></script>
 <script src="src/lib/paths.js"></script>
 <script src="src/core/errors.js"></script>
+<script src="src/core/ticks.js"></script>
 <script src="src/core/jobModel.js"></script>
 <script src="src/core/auphonicClient.js"></script>
 <script src="src/core/selection.js"></script>
 <script src="src/core/costEstimate.js"></script>
+<script src="src/core/handles.js"></script>
 <script src="src/core/export.js"></script>
 <script src="src/core/insertion.js"></script>
 <script src="src/core/cache.js"></script>
