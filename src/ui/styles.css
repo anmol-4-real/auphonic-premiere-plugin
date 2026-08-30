@@ -144,3 +144,8 @@ button:disabled {
   padding: 4px 8px;
   font-size: 10.5px;
 }
+/* Phase 4b: minimal visual cue for rows sharing one consolidated batch --
+   reuses the existing button-accent blue rather than a new color. */
+.batch-row td:first-child {
+  border-left: 3px solid #2680eb;
+}

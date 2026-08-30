@@ -159,7 +159,11 @@
     return JSON.parse(res.body).data.uuid;
   }
 
-  async function uploadInputFile(apiKey, productionUuid, arrayBuffer, filename, onUploadProgress) {
+  // Phase 4b: a consolidated batch's file has no size cap, so the default
+  // 120s timeout (sized for one clip) may not be enough -- queue.js's batch
+  // path passes a scaled value; every existing solo-job call site is
+  // unaffected since the default here is unchanged.
+  async function uploadInputFile(apiKey, productionUuid, arrayBuffer, filename, onUploadProgress, timeoutMs = 120000) {
     const { body, contentType } = buildMultipartBody("input_file", filename, "audio/wav", arrayBuffer);
     let res;
     try {
@@ -169,7 +173,7 @@
         apiKey,
         body,
         contentType,
-        timeoutMs: 120000,
+        timeoutMs,
         onUploadProgress,
       });
     } catch (err) {
@@ -273,14 +277,15 @@
     );
   }
 
-  async function downloadOutputFile(apiKey, downloadUrl) {
+  // Phase 4b: same scaled-timeout reasoning as uploadInputFile above.
+  async function downloadOutputFile(apiKey, downloadUrl, timeoutMs = 120000) {
     let res;
     try {
       res = await xhrRequest({
         method: "GET",
         url: downloadUrl + `?bearer_token=${encodeURIComponent(apiKey)}`,
         responseType: "arraybuffer",
-        timeoutMs: 120000,
+        timeoutMs,
       });
     } catch (err) {
       throw wrap(CATEGORY.DOWNLOAD_FAILED, err, "Download failed");

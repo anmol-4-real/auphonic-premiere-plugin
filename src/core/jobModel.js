@@ -47,17 +47,32 @@
     return `${stamp}_${String(jobSequenceCounter).padStart(4, "0")}_${safeName}`;
   }
 
+  // Phase 4b: batch membership must be known client-side before any
+  // production exists (the concatenation export needs to know which units
+  // belong together before createProduction is ever called), so this can't
+  // just be productionId. Same per-session counter approach as makeJobId,
+  // in its own sequence so batch ids and job ids never collide.
+  let batchSequenceCounter = 0;
+
+  function makeBatchId() {
+    batchSequenceCounter += 1;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return `batch_${stamp}_${String(batchSequenceCounter).padStart(4, "0")}`;
+  }
+
   /*
    * fields: originalClipName, sequenceGuid, sourceProjectItemPath,
    *         timelineStartTicks, timelineEndTicks, presetUuid, handlesSeconds,
    *         originalSelectionType, linkedAudioResolved (Phase 2), extraFormats,
-   *         labelColor (Phase 3) -- each has a sensible default so earlier
+   *         labelColor (Phase 3), batchId (Phase 4b) -- each has a sensible
+   *         default so earlier
    *         call sites that don't pass them still work.
    */
   function createJob(fields) {
     const jobId = makeJobId(fields.originalClipName);
     return {
       jobId,
+      batchId: fields.batchId || null,
       productionId: null,
       // Phase 4a: set to true only immediately after startProduction()
       // resolves successfully, and persisted right away (see
@@ -142,6 +157,7 @@
     markFailed,
     markCanceled,
     makeJobId,
+    makeBatchId,
     STATUS_LABELS,
   };
 })();

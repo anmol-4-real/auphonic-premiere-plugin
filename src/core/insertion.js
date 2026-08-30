@@ -75,6 +75,15 @@
     return `${sanitizeFilenamePart(originalClipName)}_Auphonic_${sanitizeFilenamePart(presetName)}.${ext}`;
   }
 
+  /*
+   * Phase 4b: there's no single clip name for a shared consolidated-batch
+   * file (it holds N clips' own audio), so this is a new, explicit naming
+   * convention rather than reusing buildOutputName.
+   */
+  function buildConsolidatedOutputName(presetName, unitCount, ext) {
+    return `Batch_Auphonic_${sanitizeFilenamePart(presetName)}_${unitCount}clips.${ext}`;
+  }
+
   function splitNameAndExt(name) {
     const match = /^(.*)(\.[^.]+)$/.exec(name);
     return match ? { base: match[1], ext: match[2] } : { base: name, ext: "" };
@@ -155,11 +164,13 @@
   }
 
   /*
-   * Shared by importAndPlace (WAV) and importExtraOutputFile (MP3/AAC):
-   * import the file, find the resulting ProjectItem, rename it. Everything
-   * after this point (placement vs. organization-only) differs by caller.
+   * Shared by importAndPlace (WAV), importExtraOutputFile (MP3/AAC), and
+   * (Phase 4b) importConsolidatedFile: import the file, find the resulting
+   * ProjectItem, rename it to desiredName. Everything after this point
+   * (placement vs. organization-only, and which naming convention produced
+   * desiredName) differs by caller.
    */
-  async function importOutputFile({ project, filePath, originalClipName, presetName, ext }) {
+  async function importOutputFile({ project, filePath, desiredName }) {
     // Adobe's own sample calls importFiles(filePaths, true, undefined, false)
     // -- confirmed live to throw "Illegal Parameter type" on this build.
     // Passing explicit `undefined`/`false` for the optional trailing args
@@ -186,11 +197,7 @@
       );
     }
 
-    const newName = await ensureUniqueProjectItemName(
-      project,
-      buildOutputName(originalClipName, presetName, ext),
-      importedItem
-    );
+    const newName = await ensureUniqueProjectItemName(project, desiredName, importedItem);
     try {
       let renameOk = false;
       project.lockedAccess(() => {
@@ -256,9 +263,7 @@
     const { importedItem, newName } = await importOutputFile({
       project,
       filePath: outputFilePath,
-      originalClipName,
-      presetName,
-      ext: "wav",
+      desiredName: buildOutputName(originalClipName, presetName, "wav"),
     });
 
     const organizationWarnings = await organizeImportedItem({ project, importedItem, binName, colorLabel });
@@ -320,7 +325,27 @@
    * WAV path in importAndPlace; this never touches it.
    */
   async function importExtraOutputFile({ project, filePath, originalClipName, presetName, ext, binName = null, colorLabel = null }) {
-    const { importedItem, newName } = await importOutputFile({ project, filePath, originalClipName, presetName, ext });
+    const { importedItem, newName } = await importOutputFile({
+      project,
+      filePath,
+      desiredName: buildOutputName(originalClipName, presetName, ext),
+    });
+    const organizationWarnings = await organizeImportedItem({ project, importedItem, binName, colorLabel });
+    return { importedItem, newName, organizationWarnings };
+  }
+
+  /*
+   * Phase 4b: imports a batch-level shared file (currently: extra MP3/AAC
+   * formats only -- the WAV that actually gets placed on the timeline is
+   * sliced per unit and placed via the normal importAndPlace path instead,
+   * see wav.js's header for why). Bin-only, imported once per batch.
+   */
+  async function importConsolidatedFile({ project, filePath, presetName, unitCount, ext = "wav", binName = null, colorLabel = null }) {
+    const { importedItem, newName } = await importOutputFile({
+      project,
+      filePath,
+      desiredName: buildConsolidatedOutputName(presetName, unitCount, ext),
+    });
     const organizationWarnings = await organizeImportedItem({ project, importedItem, binName, colorLabel });
     return { importedItem, newName, organizationWarnings };
   }
@@ -329,7 +354,9 @@
   window.Auphonic.insertion = {
     importAndPlace,
     importExtraOutputFile,
+    importConsolidatedFile,
     buildOutputName,
+    buildConsolidatedOutputName,
     findProjectItemByMediaPath,
     findCollisionOnAudioTrack,
   };

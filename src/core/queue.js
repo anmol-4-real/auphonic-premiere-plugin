@@ -24,11 +24,19 @@
  * simply "revalidate the original clip against the still-live trackItem
  * reference, then redo the pipeline from the top."
  *
+ * Phase 4b (PRD 9.3/11): processBatch() handles a batch of jobs sharing one
+ * batchId -- several jobs' audio concatenated into one shared production,
+ * each job's own segment placed back separately using its own offset/
+ * duration into the shared downloaded file. See that function's own header
+ * for the full shape; the module-level idioms above (idempotent steps,
+ * revalidate-then-redo-from-the-top retries) still hold, just broadcast to
+ * every batch member instead of one job.
+ *
  * Loaded as a plain <script> tag -- see the note at the top of
  * lib/secureStorage.js for why. Depends on window.Auphonic.{errors, ticks,
  * jobModel, auphonicClient, selection, exportModule, insertion, organization,
- * paths, cache}, which must all be loaded first (see index.html's script
- * order). Published on window.Auphonic.queue.
+ * paths, cache, wav}, which must all be loaded first (see index.html's
+ * script order). Published on window.Auphonic.queue.
  */
 (function () {
   const ppro = require("premierepro");
@@ -42,6 +50,7 @@
   const organization = window.Auphonic.organization;
   const paths = window.Auphonic.paths;
   const cache = window.Auphonic.cache;
+  const wav = window.Auphonic.wav;
 
   // Matches auphonicClient.js's own FORMAT_SPECS -- Auphonic echoes AAC back
   // with a "m4a" container extension, confirmed live in Phase 3.
@@ -101,6 +110,60 @@
         linkedAudioResolved: bundle.linkedAudioResolved,
         extraFormats: bundle.extraFormats,
         labelColor: bundle.labelColor,
+      });
+      job.collisionDetected = Boolean(bundle.forceNewTrackBelow);
+      job.collisionDecision = bundle.forceNewTrackBelow ? "created_new_track" : null;
+      await jobModel.saveJob(project, job);
+
+      const entry = {
+        job,
+        live: {
+          project: bundle.project,
+          sequence: bundle.sequence,
+          trackItem: bundle.trackItem,
+          projectItem: bundle.projectItem,
+          trackIndex: bundle.trackIndex,
+          startTime: bundle.startTime,
+          endTime: bundle.endTime,
+          presetName: bundle.preset.name,
+          handlesPlan: bundle.handlesPlan,
+          forceNewTrackBelow: Boolean(bundle.forceNewTrackBelow),
+        },
+        cancelRequested: false,
+      };
+      entries.push(entry);
+      newEntries.push(entry);
+    }
+    return newEntries;
+  }
+
+  /*
+   * Phase 4b: same as enqueue() above, but every bundle shares one batchId
+   * -- this is what tells runQueue's scan (and processBatch, retryJob,
+   * cancelJob below) that these jobs belong to one consolidated production
+   * rather than N independent ones. Batch membership has to be decided here,
+   * client-side, before any production exists.
+   */
+  async function enqueueConsolidated(project, unitBundles) {
+    const batchId = jobModel.makeBatchId();
+    const newEntries = [];
+    for (const bundle of unitBundles) {
+      const job = jobModel.createJob({
+        originalClipName: bundle.clipName,
+        sequenceGuid: bundle.sequence.guid || bundle.sequence.name || "unknown-sequence",
+        sourceProjectItemPath: bundle.mediaPath,
+        timelineStartTicks: ticksStringOf(bundle.startTime),
+        timelineEndTicks: ticksStringOf(bundle.endTime),
+        presetUuid: bundle.preset.uuid,
+        handlesSeconds:
+          bundle.handlesPlan.leftSeconds > 0 || bundle.handlesPlan.rightSeconds > 0
+            ? Math.max(bundle.handlesPlan.leftSeconds, bundle.handlesPlan.rightSeconds)
+            : 0,
+        originalSelectionType: bundle.originalSelectionType,
+        linkedAudioResolved: bundle.linkedAudioResolved,
+        extraFormats: bundle.extraFormats,
+        labelColor: bundle.labelColor,
+        batchId,
       });
       job.collisionDetected = Boolean(bundle.forceNewTrackBelow);
       job.collisionDecision = bundle.forceNewTrackBelow ? "created_new_track" : null;
@@ -384,6 +447,387 @@
     }
   }
 
+  /* ------------------------------------------------------- batch pipeline */
+
+  async function broadcastStatus(batchEntries, status, hooks) {
+    const onStatus = hooks.onStatus || (() => {});
+    for (const entry of batchEntries) {
+      jobModel.markStatus(entry.job, status);
+      await jobModel.saveJob(entry.live.project, entry.job);
+      onStatus(entry);
+    }
+  }
+
+  function broadcastLog(batchEntries, hooks, message, cls) {
+    const onLog = hooks.onLog || (() => {});
+    batchEntries.forEach((entry) => onLog(entry, message, cls));
+  }
+
+  async function markAllFailed(batchEntries, category, message, hooks) {
+    const onStatus = hooks.onStatus || (() => {});
+    for (const entry of batchEntries) {
+      jobModel.markFailed(entry.job, category, message);
+      try {
+        await jobModel.saveJob(entry.live.project, entry.job);
+      } catch (e) {
+        // Non-fatal -- surfacing the original error matters more.
+      }
+      onStatus(entry);
+    }
+    broadcastLog(batchEntries, hooks, `${category}: ${message}`, "bad");
+  }
+
+  /*
+   * Phase 4b (PRD 9.3/11): runs the shared prefix (export/create-production/
+   * upload/start/poll/download) once for a whole batch sharing one
+   * batchId, then places each member's own segment independently. Status
+   * and failures are broadcast to every batch member together during the
+   * shared prefix -- both so every row visibly progresses together, and so
+   * every affected row ends up in a retriable "failed" state (retryJob's
+   * own batch-cascade below depends on this).
+   *
+   * `batchEntries` is whatever runQueue's scan gathered as currently
+   * "queued" for this batchId -- a fresh batch's full membership, or (after
+   * a retry) just the one or few members still needing work.
+   */
+  async function processBatch(batchEntries, apiKey, hooks = {}) {
+    const onLog = hooks.onLog || (() => {});
+    const onStatus = hooks.onStatus || (() => {});
+
+    // Revalidate every member against its own still-live trackItem -- same
+    // check processJob does for a solo job. A member that's no longer
+    // eligible is dropped from the batch (marked failed on its own, with its
+    // own reason) rather than failing the whole batch over it.
+    await broadcastStatus(batchEntries, "validating", hooks);
+    const validEntries = [];
+    for (const entry of batchEntries) {
+      const revalidation = await selectionModule.classifyAndValidate(entry.live.sequence, entry.live.trackItem);
+      if (!revalidation.eligible) {
+        jobModel.markFailed(
+          entry.job,
+          CATEGORY.UNSUPPORTED_CLIP,
+          `No longer eligible: ${revalidation.reason || "the clip changed since it was queued."}`
+        );
+        try {
+          await jobModel.saveJob(entry.live.project, entry.job);
+        } catch (e) {
+          // Non-fatal.
+        }
+        onStatus(entry);
+        onLog(entry, `${CATEGORY.UNSUPPORTED_CLIP}: dropped from its batch -- ${revalidation.reason || "no longer eligible."}`, "bad");
+        continue;
+      }
+      validEntries.push(entry);
+    }
+
+    if (validEntries.length === 0) return;
+
+    const project = validEntries[0].live.project;
+    const sequence = validEntries[0].live.sequence;
+    const sharedPrefixDone = validEntries.some((e) => e.job.outputCachePath);
+
+    // Only delegate to the solo pipeline when there's exactly one member
+    // left AND the shared work never happened for it. A single entry whose
+    // shared work already succeeded (only its own placement failed, and
+    // it's being retried alone) must skip straight to the placement loop
+    // below, reusing the already-uploaded/processed/downloaded shared file
+    // -- processJob would otherwise re-export and re-upload just this one
+    // clip's own audio into the batch's already-completed production.
+    if (validEntries.length === 1 && !sharedPrefixDone) {
+      await processJob(validEntries[0], apiKey, hooks);
+      return;
+    }
+
+    if (!sharedPrefixDone) {
+      try {
+        await broadcastStatus(validEntries, "exporting", hooks);
+        const batchHomeFolder = await paths.getJobFolder(project, validEntries[0].job.jobId);
+        const inputFile = await paths.reserveFile(batchHomeFolder, "input.wav");
+
+        const exportResult = await exportModule.exportConsolidatedRange({
+          project,
+          sequence,
+          units: validEntries.map((e) => ({
+            trackItem: e.live.trackItem,
+            projectItem: e.live.projectItem,
+            leftTicks: e.live.handlesPlan.leftTicks,
+            rightTicks: e.live.handlesPlan.rightTicks,
+          })),
+          outputFile: inputFile,
+        });
+
+        let totalDurationSeconds = 0;
+        for (let i = 0; i < validEntries.length; i++) {
+          const entry = validEntries[i];
+          const perUnit = exportResult.perUnit[i];
+          const originalStartTicks = ticks.ticksNumberOf(entry.live.startTime);
+          entry.live.placementStartTime = ppro.TickTime.createWithTicks(
+            String(Math.round(originalStartTicks - perUnit.achievedLeftTicks))
+          );
+
+          const offsetSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.offsetTicks))).seconds;
+          const durationSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.durationTicks))).seconds;
+          entry.job.consolidationOffsetMs = Math.round(offsetSeconds * 1000);
+          entry.job.consolidationDurationMs = Math.round(durationSeconds * 1000);
+          entry.job.inputCachePath = inputFile.nativePath;
+          entry.job.handlesActualLeftSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.achievedLeftTicks))).seconds;
+          entry.job.handlesActualRightSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.achievedRightTicks))).seconds;
+          entry.job.handlesClampWarnings = entry.live.handlesPlan.clampWarnings;
+          totalDurationSeconds += durationSeconds;
+          await jobModel.saveJob(project, entry.job);
+        }
+        broadcastLog(
+          validEntries,
+          hooks,
+          `Exported as one consolidated file (${validEntries.length} clips, one shared production): ${inputFile.nativePath}`,
+          "ok"
+        );
+
+        // Diagnostic (while the total-vs-actual duration discrepancy is
+        // under investigation): measure the LOCAL exported file's own real
+        // duration, before a single byte gets uploaded. If this already
+        // disagrees with totalDurationSeconds, the bug is in export.js's own
+        // render/bracket step; if it matches but Auphonic's reported input
+        // length doesn't, the bug is somewhere in the upload path instead.
+        try {
+          const localExportedSeconds = wav.wavDurationSeconds(await paths.readBinary(inputFile));
+          console.log(
+            `Auphonic consolidated export: local exported file is ${localExportedSeconds.toFixed(3)}s, ` +
+              `computed total from per-unit durations is ${totalDurationSeconds.toFixed(3)}s` +
+              (Math.abs(localExportedSeconds - totalDurationSeconds) > 0.5 ? " -- MISMATCH already at export time." : " -- matches.")
+          );
+        } catch (e) {
+          console.warn(`Auphonic consolidated export: could not measure the local exported file for diagnostic purposes (${e.message || e}).`);
+        }
+
+        await broadcastStatus(validEntries, "creating_production", hooks);
+        const presetName = validEntries[0].live.presetName;
+        const outputBasename = `Batch_${validEntries.length}clips_${presetName}`.replace(/[\/:*?"<>|]/g, "_");
+        // Reuse a productionId any member already carries (e.g. one that
+        // briefly ran solo -- see processBatch's own single-member fallback
+        // above -- before rejoining this group on a later retry) rather
+        // than unconditionally creating a new one and orphaning it -- same
+        // "if (job.productionId) reuse else create" idiom processJob
+        // already relies on, generalized to the whole group.
+        const entryWithProduction = validEntries.find((e) => e.job.productionId);
+        let productionId = entryWithProduction ? entryWithProduction.job.productionId : null;
+        if (productionId) {
+          broadcastLog(validEntries, hooks, `Reusing existing production: ${productionId}`, "dim");
+        } else {
+          productionId = await auphonicClient.createProduction(apiKey, {
+            presetUuid: validEntries[0].job.presetUuid,
+            title: `Auphonic batch (${validEntries.length} clips)`,
+            outputBasename,
+            extraFormats: validEntries[0].job.extraFormats,
+          });
+          broadcastLog(validEntries, hooks, `Production created: ${productionId}`, "ok");
+        }
+        for (const entry of validEntries) {
+          entry.job.productionId = productionId;
+          await jobModel.saveJob(project, entry.job);
+        }
+
+        await broadcastStatus(validEntries, "uploading", hooks);
+        const inputBytes = await paths.readBinary(inputFile);
+        // Scaled timeout (§2's reasoning) -- a consolidated file has no size
+        // cap, unlike the fixed 120s default sized for one clip.
+        const scaledTimeoutMs = Math.max(120000, Math.round(totalDurationSeconds * 2000) + 60000);
+        await auphonicClient.uploadInputFile(
+          apiKey,
+          productionId,
+          inputBytes,
+          "input.wav",
+          (loaded, total) => broadcastLog(validEntries, hooks, `Uploading batch... ${Math.round((loaded / total) * 100)}%`, "dim"),
+          scaledTimeoutMs
+        );
+        broadcastLog(validEntries, hooks, "Upload complete.", "ok");
+
+        await broadcastStatus(validEntries, "processing", hooks);
+        // Checked/propagated across the whole group, not just one entry --
+        // a member that reused an existing productionId (see above) may
+        // already have this set to true while a newly-joined sibling
+        // doesn't yet.
+        if (!validEntries.some((e) => e.job.productionStarted)) {
+          await auphonicClient.startProduction(apiKey, productionId);
+        } else {
+          broadcastLog(validEntries, hooks, "Production already started -- resuming poll.", "dim");
+        }
+        for (const entry of validEntries) {
+          if (!entry.job.productionStarted) {
+            entry.job.productionStarted = true;
+            await jobModel.saveJob(project, entry.job);
+          }
+        }
+        await auphonicClient.pollUntilDone(apiKey, productionId, {
+          onPoll: (statusData) =>
+            broadcastLog(validEntries, hooks, `  status: ${statusData.status_string || statusData.status}`, "dim"),
+        });
+        broadcastLog(validEntries, hooks, "Auphonic processing done.", "ok");
+
+        await broadcastStatus(validEntries, "downloading", hooks);
+        const detail = await auphonicClient.getProductionDetail(apiKey, productionId);
+        const wavMeta = findOutputFileMeta(detail, "wav");
+        if (!wavMeta) {
+          throw new AuphonicPluginError(CATEGORY.DOWNLOAD_FAILED, "Auphonic reported no WAV output file.");
+        }
+        const wavBytes = await auphonicClient.downloadOutputFile(apiKey, wavMeta.download_url, scaledTimeoutMs);
+
+        // Safeguard (HANDOFF.md "Key risk"): some Auphonic presets
+        // (silence/gap removal) shift audio in time. If the processed
+        // file's real duration doesn't match what every unit's own
+        // offset/duration says it should be, placing segments against it
+        // would silently misplace audio -- fail the whole batch loudly
+        // instead of trusting stale (pre-processing) offsets.
+        const actualSeconds = wav.wavDurationSeconds(wavBytes);
+        const tolerance = Math.max(1, totalDurationSeconds * 0.01);
+        if (Math.abs(actualSeconds - totalDurationSeconds) > tolerance) {
+          await markAllFailed(
+            validEntries,
+            CATEGORY.PROCESSING_FAILED,
+            `Auphonic's processing changed the audio's timing (likely a silence/gap-removal setting in your preset) -- ` +
+              `expected about ${totalDurationSeconds.toFixed(1)}s, got ${actualSeconds.toFixed(1)}s. Segments can't be placed ` +
+              `safely in Consolidated mode. Try again with "Consolidate into one production" turned off, or pick a preset ` +
+              `without automatic silence/gap removal.`,
+            hooks
+          );
+          return;
+        }
+
+        // Slice each unit's own segment out of the one shared downloaded
+        // file into its own small, standalone WAV (see wav.js's header for
+        // why this -- not importing the shared file once and trimming N
+        // different track-item in/out points against it -- is the safe
+        // approach). Every job's own "output.wav" ends up a completely
+        // normal, independent file, exactly matching the existing per-job
+        // convention -- no changes needed to cache.js's cleanup, and no
+        // risk of one job's cleanup ever affecting another's already-placed
+        // clip, since nothing is shared at the Premiere-import level.
+        for (const entry of validEntries) {
+          const offsetSeconds = entry.job.consolidationOffsetMs / 1000;
+          const durationSeconds = entry.job.consolidationDurationMs / 1000;
+          const sliced = wav.sliceWav(wavBytes, offsetSeconds, durationSeconds);
+          const folder = await paths.getJobFolder(project, entry.job.jobId);
+          const outputFile = await paths.writeBinary(folder, "output.wav", sliced);
+          entry.job.outputCachePath = outputFile.nativePath;
+          await jobModel.saveJob(project, entry.job);
+        }
+        broadcastLog(validEntries, hooks, `Downloaded and split into ${validEntries.length} clips' own cleaned segments.`, "ok");
+
+        const extraFormats = validEntries[0].job.extraFormats || [];
+        for (const format of extraFormats) {
+          const meta = findOutputFileMeta(detail, format);
+          if (!meta) {
+            broadcastLog(validEntries, hooks, `Warning: Auphonic reported no ${format.toUpperCase()} output file -- skipping.`, "warn");
+            continue;
+          }
+          try {
+            const bytes = await auphonicClient.downloadOutputFile(apiKey, meta.download_url, scaledTimeoutMs);
+            const ext = EXT_FOR_FORMAT[format];
+            for (const entry of validEntries) {
+              const folder = await paths.getJobFolder(project, entry.job.jobId);
+              const extraFile = await paths.writeBinary(folder, `output.${ext}`, bytes);
+              entry.job.extraOutputCachePaths[format] = extraFile.nativePath;
+              await jobModel.saveJob(project, entry.job);
+            }
+            const extra = await insertion.importConsolidatedFile({
+              project,
+              filePath: validEntries[0].job.extraOutputCachePaths[format],
+              presetName,
+              unitCount: validEntries.length,
+              ext,
+              binName: organization.DEFAULT_BIN_NAME,
+              colorLabel: validEntries[0].job.labelColor,
+            });
+            broadcastLog(validEntries, hooks, `Imported "${extra.newName}" into the "${organization.DEFAULT_BIN_NAME}" bin.`, "ok");
+            extra.organizationWarnings.forEach((w) => broadcastLog(validEntries, hooks, `Warning: ${w}`, "warn"));
+          } catch (err) {
+            broadcastLog(validEntries, hooks, `Warning: could not import the ${format.toUpperCase()} file (${err.message || err}).`, "warn");
+          }
+        }
+      } catch (err) {
+        const category = err instanceof AuphonicPluginError ? err.category : CATEGORY.PROCESSING_FAILED;
+        const message = err instanceof AuphonicPluginError ? err.message : String(err.message || err);
+        await markAllFailed(validEntries, category, message, hooks);
+        return;
+      }
+    }
+
+    // Per-job placement loop -- runs for every member still not terminal,
+    // whether the shared prefix just ran above or was already done from a
+    // prior attempt (a lone retried entry whose own placement failed). Each
+    // job's own sliced "output.wav" (written above) is a completely normal,
+    // independent file at this point, so placement is IDENTICAL to a solo
+    // job's -- same insertion.importAndPlace call processJob itself uses.
+    for (const entry of validEntries) {
+      if (["inserted", "failed", "canceled"].includes(entry.job.status)) continue; // defensive idempotency guard
+
+      const setStatus = async (status) => {
+        jobModel.markStatus(entry.job, status);
+        await jobModel.saveJob(project, entry.job);
+        onStatus(entry);
+      };
+
+      try {
+        await setStatus("placing");
+
+        // In a batch, this checkpoint is reached both for a pre-start cancel
+        // and a mid/post-start one, and it always means the same thing here
+        // -- skip THIS job's placement only. The shared production was
+        // already paid for either way (see cancelJob below).
+        if (entry.cancelRequested) {
+          jobModel.markCanceled(entry.job, "Canceled -- placement skipped. Credits for the shared production were already spent.");
+          await jobModel.saveJob(project, entry.job);
+          onStatus(entry);
+          continue;
+        }
+
+        const placement = await insertion.importAndPlace({
+          project,
+          sequence: entry.live.sequence,
+          originalTrackItem: entry.live.trackItem,
+          originalTrackIndex: entry.live.trackIndex,
+          startTime: entry.live.placementStartTime,
+          outputFilePath: entry.job.outputCachePath,
+          originalClipName: entry.job.originalClipName,
+          presetName: entry.live.presetName,
+          forceNewTrackBelow: entry.live.forceNewTrackBelow,
+          binName: organization.DEFAULT_BIN_NAME,
+          colorLabel: entry.job.labelColor,
+        });
+
+        await setStatus("inserted");
+        onLog(
+          entry,
+          `Placed as "${placement.newName}" on audio track ${placement.targetTrackIndex + 1}` +
+            (placement.createdNewTrack ? " (new track created)" : ""),
+          "ok"
+        );
+        if (!placement.disableOk) {
+          onLog(
+            entry,
+            `Warning: could not disable the original clip's audio automatically (${placement.disableError || "unknown reason"}). Disable it by hand.`,
+            "warn"
+          );
+        } else {
+          onLog(entry, "Original audio disabled (clip kept, not deleted).", "ok");
+        }
+        placement.organizationWarnings.forEach((w) => onLog(entry, `Warning: ${w}`, "warn"));
+      } catch (err) {
+        const category = err instanceof AuphonicPluginError ? err.category : CATEGORY.PROCESSING_FAILED;
+        const message = err instanceof AuphonicPluginError ? err.message : String(err.message || err);
+        jobModel.markFailed(entry.job, category, message);
+        try {
+          await jobModel.saveJob(project, entry.job);
+        } catch (e) {
+          // Non-fatal.
+        }
+        onStatus(entry);
+        onLog(entry, `${category}: ${message}`, "bad");
+        // One segment's placement failure must never block the others.
+      }
+    }
+  }
+
   /* --------------------------------------------------------------- running */
 
   /*
@@ -404,7 +848,16 @@
       while (true) {
         const next = entries.find((e) => e.live && e.job.status === "queued");
         if (!next) break;
-        await processJob(next, apiKey, hooks);
+        if (next.job.batchId) {
+          // Gathering every currently-"queued" sibling here is also where a
+          // batch's working membership gets locked in for this run -- see
+          // cancelJob/retryJob below for what that means for a mid-batch
+          // cancel/retry.
+          const siblings = entries.filter((e) => e.live && e.job.batchId === next.job.batchId && e.job.status === "queued");
+          await processBatch(siblings, apiKey, hooks);
+        } else {
+          await processJob(next, apiKey, hooks);
+        }
       }
     } finally {
       isRunning = false;
@@ -420,10 +873,33 @@
    */
   async function retryJob(entry, apiKey, hooks = {}) {
     if (!entry.live) return;
-    jobModel.markStatus(entry.job, "queued");
-    entry.cancelRequested = false;
-    await jobModel.saveJob(entry.live.project, entry.job);
-    if (hooks.onStatus) hooks.onStatus(entry);
+    const onStatus = hooks.onStatus || (() => {});
+
+    // Phase 4b: a batch member whose shared work never completed shares one
+    // unfinished production with its siblings -- retrying it must retry all
+    // of them together, not just the one clicked (their status was
+    // broadcast together on failure by processBatch, so every one of them
+    // should already show as "failed" here). A member whose shared work DID
+    // complete (only its own placement failed) is retried alone -- the next
+    // processBatch call will find just it "queued" and, seeing its
+    // outputCachePath already set, skip straight to placement.
+    if (entry.job.batchId && !entry.job.outputCachePath) {
+      const siblings = entries.filter(
+        (e) => e.live && e.job.batchId === entry.job.batchId && e.job.status === "failed"
+      );
+      for (const sibling of siblings) {
+        jobModel.markStatus(sibling.job, "queued");
+        sibling.cancelRequested = false;
+        await jobModel.saveJob(sibling.live.project, sibling.job);
+        onStatus(sibling);
+      }
+    } else {
+      jobModel.markStatus(entry.job, "queued");
+      entry.cancelRequested = false;
+      await jobModel.saveJob(entry.live.project, entry.job);
+      onStatus(entry);
+    }
+
     if (!isRunning) {
       await runQueue(entry.live.project, apiKey, hooks);
     }
@@ -438,6 +914,21 @@
    */
   async function cancelJob(entry) {
     entry.cancelRequested = true;
+
+    // Phase 4b: once ANY member of this batch has moved past "queued",
+    // processBatch has already started (or finished) the shared
+    // export/upload/production for the whole batch -- those credits are
+    // spent regardless of this one member's cancel. Leave cancelRequested
+    // set and let the placement-loop checkpoint in processBatch handle it
+    // (with wording that says credits were still spent), rather than
+    // claiming "no credits were spent" here, which would be false.
+    if (entry.job.batchId) {
+      const batchStarted = entries.some(
+        (e) => e.live && e.job.batchId === entry.job.batchId && e.job.status !== "queued"
+      );
+      if (batchStarted) return;
+    }
+
     if (entry.live && CANCELABLE_STATUSES.includes(entry.job.status)) {
       jobModel.markCanceled(entry.job, "Canceled before upload; no credits were spent.");
       await jobModel.saveJob(entry.live.project, entry.job);
@@ -466,6 +957,7 @@
     getEntries,
     findEntryByJobId,
     enqueue,
+    enqueueConsolidated,
     recordDeclinedJob,
     loadHistory,
     runQueue,

@@ -41,6 +41,11 @@
     AAC
   </label>
 
+  <label class="checkbox-row" for="consolidateEnabled">
+    <input type="checkbox" id="consolidateEnabled" />
+    Consolidate into one production (cheaper for several short clips)
+  </label>
+
   <button id="checkSelectionBtn">Check Selected Clip(s)</button>
   <div class="status-line" id="selectionStatus"><span class="dim">Not checked yet.</span></div>
 
@@ -92,6 +97,7 @@
 -->
 <script src="src/lib/secureStorage.js"></script>
 <script src="src/lib/paths.js"></script>
+<script src="src/lib/wav.js"></script>
 <script src="src/core/errors.js"></script>
 <script src="src/core/organization.js"></script>
 <script src="src/core/ticks.js"></script>

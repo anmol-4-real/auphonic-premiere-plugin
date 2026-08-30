@@ -29,6 +29,7 @@
     apiKey: null,
     presets: [],
     pendingUnits: [],
+    consolidating: false,
   };
 
   /*
@@ -210,6 +211,25 @@
     });
     el("handlesSecondsInput").addEventListener("change", () => {
       cache.saveSettings({ handlesSeconds: parseFloat(el("handlesSecondsInput").value) || 2.0 });
+    });
+  }
+
+  /* ---------------------------------------------------- consolidation */
+
+  /*
+   * Phase 4b: opt-in, default ON (your call this session) whenever 2+
+   * clips end up eligible in a checked batch -- inert below that, same as
+   * unchecking it. Persisted like every other toggle.
+   */
+  function consolidateRequested() {
+    return el("consolidateEnabled").checked;
+  }
+
+  async function wireConsolidateSection() {
+    const settings = await cache.getSettings();
+    el("consolidateEnabled").checked = settings.consolidateEnabled !== false;
+    el("consolidateEnabled").addEventListener("change", () => {
+      cache.saveSettings({ consolidateEnabled: el("consolidateEnabled").checked });
     });
   }
 
@@ -395,36 +415,58 @@
       }
 
       let totalDuration = 0;
-      let totalBillable = 0;
       const allWarnings = [];
       readyBundles.forEach((bundle) => {
-        const est = costEstimate.estimate({
-          durationSeconds: bundle.handlesPlan.widenedDurationSeconds,
-          availableCreditsHours: credits,
-        });
-        bundle.estimate = est;
-        totalDuration += est.durationSeconds;
-        totalBillable += est.billableSeconds;
-        est.warnings.forEach((w) => allWarnings.push(`${bundle.clipName}: ${w}`));
+        totalDuration += bundle.handlesPlan.widenedDurationSeconds;
         bundle.handlesPlan.clampWarnings.forEach((w) => allWarnings.push(`${bundle.clipName}: ${w}`));
       });
 
       state.pendingUnits = readyBundles;
+      // Consolidation only means anything for 2+ clips -- inert (falls back
+      // to Phase 4a's per-clip-summed estimate/production below) otherwise.
+      state.consolidating = consolidateRequested() && readyBundles.length >= 2;
 
       const readyNames = readyBundles.map((b) =>
         b.originalSelectionType === "video" ? `${b.clipName} (video clip -- using linked audio)` : b.clipName
       );
-      const statusLines = [`<span class="ok">${readyBundles.length} clip(s) ready: ${readyNames.join(", ")}</span>`];
+      const statusLines = [
+        `<span class="ok">${readyBundles.length} clip(s) ready${state.consolidating ? " (consolidating into one production)" : ""}: ${readyNames.join(", ")}</span>`,
+      ];
       if (skipLines.length > 0) statusLines.push(`<span class="bad">${skipLines.join("<br/>")}</span>`);
       setHtml("selectionStatus", statusLines.join("<br/>"));
 
-      setHtml(
-        "estimateText",
-        `Clips ready: ${readyBundles.length}<br/>` +
-          `Total actual duration: ${costEstimate.formatDuration(totalDuration)}<br/>` +
-          `Total estimated billable time: ${costEstimate.formatDuration(totalBillable)}` +
-          (credits !== null ? `<br/>Available credits: ${credits} h` : "")
-      );
+      if (state.consolidating) {
+        // One combined estimate (one 3-minute floor across the whole batch)
+        // -- shown instead of, not alongside, a per-clip-summed number, so
+        // there's only ever one "this is what it'll bill" figure on screen.
+        const est = costEstimate.estimate({ durationSeconds: totalDuration, availableCreditsHours: credits });
+        est.warnings.forEach((w) => allWarnings.push(w));
+        setHtml(
+          "estimateText",
+          `Clips ready: ${readyBundles.length}, consolidated into one production<br/>` +
+            `Total actual duration: ${costEstimate.formatDuration(totalDuration)}<br/>` +
+            `Estimated billable time: ${costEstimate.formatDuration(est.billableSeconds)}` +
+            (credits !== null ? `<br/>Available credits: ${credits} h` : "")
+        );
+      } else {
+        let totalBillable = 0;
+        readyBundles.forEach((bundle) => {
+          const est = costEstimate.estimate({
+            durationSeconds: bundle.handlesPlan.widenedDurationSeconds,
+            availableCreditsHours: credits,
+          });
+          bundle.estimate = est;
+          totalBillable += est.billableSeconds;
+          est.warnings.forEach((w) => allWarnings.push(`${bundle.clipName}: ${w}`));
+        });
+        setHtml(
+          "estimateText",
+          `Clips ready: ${readyBundles.length}<br/>` +
+            `Total actual duration: ${costEstimate.formatDuration(totalDuration)}<br/>` +
+            `Total estimated billable time: ${costEstimate.formatDuration(totalBillable)}` +
+            (credits !== null ? `<br/>Available credits: ${credits} h` : "")
+        );
+      }
       const warningList = el("warningList");
       warningList.innerHTML = "";
       if (allWarnings.length > 0) {
@@ -477,6 +519,7 @@
     entries.forEach((entry) => {
       const { job, live } = entry;
       const row = document.createElement("tr");
+      if (job.batchId) row.classList.add("batch-row");
 
       const nameCell = document.createElement("td");
       nameCell.textContent = job.originalClipName;
@@ -556,6 +599,7 @@
   async function wireProcessSection() {
     await wireHandlesSection();
     await wireExtraFormatsSection();
+    await wireConsolidateSection();
     el("checkSelectionBtn").addEventListener("click", checkSelection);
     el("confirmBtn").addEventListener("click", async () => {
       if (!state.pendingUnits || state.pendingUnits.length === 0) return;
@@ -563,8 +607,13 @@
       const apiKey = state.apiKey;
       el("confirmBtn").disabled = true;
       try {
-        await queueModule.enqueue(project, state.pendingUnits);
+        if (state.consolidating) {
+          await queueModule.enqueueConsolidated(project, state.pendingUnits);
+        } else {
+          await queueModule.enqueue(project, state.pendingUnits);
+        }
         state.pendingUnits = [];
+        state.consolidating = false;
         hide("estimateBox");
         renderQueueTable();
         show("progressBox");
