@@ -115,3 +115,32 @@ button:disabled {
   border-radius: 3px;
   background: #33301f;
 }
+
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.queue-table th {
+  text-align: left;
+  color: #9a9a9a;
+  font-weight: normal;
+  padding: 4px 6px;
+  border-bottom: 1px solid #3d3d3d;
+}
+.queue-table td {
+  padding: 6px 6px;
+  border-bottom: 1px solid #3d3d3d;
+  vertical-align: top;
+}
+.queue-row-detail {
+  margin-top: 3px;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.queue-actions button {
+  margin-top: 0;
+  margin-right: 4px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+}

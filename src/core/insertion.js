@@ -75,6 +75,49 @@
     return `${sanitizeFilenamePart(originalClipName)}_Auphonic_${sanitizeFilenamePart(presetName)}.${ext}`;
   }
 
+  function splitNameAndExt(name) {
+    const match = /^(.*)(\.[^.]+)$/.exec(name);
+    return match ? { base: match[1], ext: match[2] } : { base: name, ext: "" };
+  }
+
+  async function nameExistsInFolder(folderItem, name, excludeItem) {
+    const items = (await folderItem.getItems()) || [];
+    for (const item of items) {
+      if (item === excludeItem) continue;
+      if (item.type === ppro.ProjectItem.TYPE_BIN) {
+        const nested = await ppro.FolderItem.cast(item);
+        if (nested && (await nameExistsInFolder(nested, name, excludeItem))) return true;
+        continue;
+      }
+      if (item.name === name) return true;
+    }
+    return false;
+  }
+
+  /*
+   * Phase 4a: batch-processing several clips that share the same original
+   * name (or the same preset) makes buildOutputName() produce identical
+   * results for each -- harmless for export/placement (every job's own
+   * underlying file is already unique, see jobModel.js's makeJobId fix),
+   * but confusing in the Project panel, where several imported items would
+   * otherwise show the exact same name. Only appends " (2)", " (3)", etc.
+   * when a real collision is found by searching the whole project (same
+   * bin-recursion pattern as searchFolderForMediaPath above) -- so the
+   * single-clip naming convention from Phases 1-3 is completely unchanged
+   * whenever there's nothing to disambiguate.
+   */
+  async function ensureUniqueProjectItemName(project, desiredName, excludeItem) {
+    const { base, ext } = splitNameAndExt(desiredName);
+    const rootItem = await project.getRootItem();
+    let candidate = desiredName;
+    let suffix = 2;
+    while (await nameExistsInFolder(rootItem, candidate, excludeItem)) {
+      candidate = `${base} (${suffix})${ext}`;
+      suffix += 1;
+    }
+    return candidate;
+  }
+
   /*
    * Live evidence (Phase 3): once the "Auphonic Processed Audio" bin exists,
    * Premiere imports new files directly into it (likely the project's
@@ -143,7 +186,11 @@
       );
     }
 
-    const newName = buildOutputName(originalClipName, presetName, ext);
+    const newName = await ensureUniqueProjectItemName(
+      project,
+      buildOutputName(originalClipName, presetName, ext),
+      importedItem
+    );
     try {
       let renameOk = false;
       project.lockedAccess(() => {

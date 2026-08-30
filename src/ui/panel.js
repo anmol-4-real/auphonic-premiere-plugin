@@ -1,6 +1,7 @@
 /*
- * Panel wiring -- DOM handling and pipeline orchestration. Core logic lives
- * in ../core/*; this file just calls it in order and reflects progress/
+ * Panel wiring -- DOM handling and UI-facing orchestration. Core logic lives
+ * in ../core/*, including the per-job pipeline itself (src/core/queue.js as
+ * of Phase 4a); this file just calls it in order and reflects progress/
  * errors to the user. Nothing here spends Auphonic credits without the user
  * clicking "Confirm & Process" after seeing the cost estimate (PRD principle #2).
  *
@@ -14,22 +15,20 @@
   const uxp = require("uxp");
   const secureStorage = window.Auphonic.secureStorage;
   const auphonicClient = window.Auphonic.auphonicClient;
-  const ticks = window.Auphonic.ticks;
   const selection = window.Auphonic.selection;
   const costEstimate = window.Auphonic.costEstimate;
-  const exportModule = window.Auphonic.exportModule;
   const insertion = window.Auphonic.insertion;
   const organization = window.Auphonic.organization;
   const handles = window.Auphonic.handles;
   const jobModel = window.Auphonic.jobModel;
+  const queueModule = window.Auphonic.queue;
   const cache = window.Auphonic.cache;
-  const paths = window.Auphonic.paths;
-  const { CATEGORY, AuphonicPluginError } = window.Auphonic.errors;
+  const { AuphonicPluginError } = window.Auphonic.errors;
 
   const state = {
     apiKey: null,
     presets: [],
-    pendingJob: null,
+    pendingUnits: [],
   };
 
   /*
@@ -38,17 +37,16 @@
    * help page -- none show it). This is a guess, not a confirmed pattern --
    * kept here rather than in auphonicClient.js (whose header explicitly
    * states everything in it is confirmed live) until proven otherwise.
-   * Live-verify by checking the real production detail JSON for an
-   * undocumented url-like field first (see the console.log in runJob
-   * below); if none exists, confirm this guessed pattern actually opens the
-   * right production before trusting it further.
+   * Confirmed live (Phase 2) to open the right production's page.
    */
   function buildProductionUrl(productionUuid) {
     return `https://auphonic.com/engine/upload/${productionUuid}`;
   }
 
   /* Small inline confirm -- not a native confirm(), which has never been
-   * used or verified in this codebase. Resolves true/false on button click. */
+   * used or verified in this codebase. Resolves true/false on button click.
+   * Reused sequentially, once per colliding unit, when checking a multi-clip
+   * selection (Phase 4a). */
   function askInlineConfirm(message) {
     return new Promise((resolve) => {
       setHtml("collisionText", message);
@@ -270,20 +268,28 @@
 
   /* ------------------------------------------------------------ selection */
 
+  /*
+   * Phase 4a: checks the WHOLE current timeline selection (any number of
+   * independent clips/video+linked-audio pairs) instead of exactly one, via
+   * selection.resolveQueueCandidates(). Ineligible units are reported the
+   * same way single-clip skips always were. A unit whose destination-track
+   * collision prompt is declined gets a durable canceled job record (via
+   * queueModule.recordDeclinedJob, same precedent Phase 1/2 established) and
+   * is otherwise excluded from the batch -- no credits are spent for it.
+   * Eligible units populate state.pendingUnits, gated behind one aggregate
+   * cost estimate and an explicit Confirm & Process click, exactly like the
+   * single-clip flow's confirmation gate (PRD principle #2), just summed
+   * across the whole batch.
+   */
   async function checkSelection() {
     hide("estimateBox");
-    hide("progressBox");
     hide("collisionPrompt");
-    state.pendingJob = null;
+    state.pendingUnits = [];
     setHtml("selectionStatus", '<span class="dim">Checking...</span>');
     try {
-      const result = await selection.resolveSelection();
+      const result = await selection.resolveQueueCandidates();
       if (result.diagnostics && result.diagnostics.length > 0) {
-        console.log("Auphonic eligibility diagnostics (checks this build couldn't run, or how media type was resolved):", result.diagnostics);
-      }
-      if (!result.eligible) {
-        setHtml("selectionStatus", `<span class="bad">Skipped: ${result.clipName || "selected item"} - ${result.reason}</span>`);
-        return;
+        console.log("Auphonic selection diagnostics:", result.diagnostics);
       }
 
       const preset = selectedPreset();
@@ -292,60 +298,82 @@
         return;
       }
 
-      // Handles (PRD 9.6) -- computeHandlePlan returns a no-op plan (plain
-      // clip range, no clamping) when requestedHandleSeconds is 0, so this
-      // always runs and downstream code never needs a separate handles-off
-      // branch.
-      const handlesPlan = await handles.computeHandlePlan({
-        trackItem: result.trackItem,
-        requestedHandleSeconds: requestedHandleSeconds(),
-      });
-      if (handlesPlan.diagnostics.length > 0) {
-        console.log("Auphonic handles diagnostics:", handlesPlan.diagnostics);
-      }
+      const skipLines = [];
+      const readyBundles = [];
 
-      // Collision detection (PRD 9.5) -- pre-flight, before any credits are
-      // spent. Checked against the widened range when handles are on, since
-      // that's the real footprint the placement will need.
-      const targetTrackIndex = result.trackIndex + 1;
-      const collisionItem = await insertion.findCollisionOnAudioTrack(
-        result.sequence,
-        targetTrackIndex,
-        handlesPlan.widenedStartTime,
-        handlesPlan.widenedEndTime
-      );
-
-      let forceNewTrackBelow = false;
-      if (collisionItem) {
-        const proceed = await askInlineConfirm(
-          "Destination track already has media at this time. Create a new track underneath and insert there?"
-        );
-        if (!proceed) {
-          const job = jobModel.createJob({
-            originalClipName: result.clipName,
-            sequenceGuid: result.sequence.guid || result.sequence.name || "unknown-sequence",
-            sourceProjectItemPath: result.mediaPath,
-            timelineStartTicks: typeof result.startTime.ticksNumber === "number" ? String(result.startTime.ticksNumber) : String(result.startTime.seconds),
-            timelineEndTicks: typeof result.endTime.ticksNumber === "number" ? String(result.endTime.ticksNumber) : String(result.endTime.seconds),
-            presetUuid: preset.uuid,
-            handlesSeconds: requestedHandleSeconds(),
-            originalSelectionType: result.originalSelectionType,
-            linkedAudioResolved: result.linkedAudioResolved,
-            extraFormats: selectedExtraFormats(),
-            labelColor: selectedLabelColor(),
-          });
-          job.collisionDetected = true;
-          job.collisionDecision = "canceled";
-          jobModel.markCanceled(job, "Destination track already had media at this time; user chose not to create a new track.");
-          try {
-            await jobModel.saveJob(result.project, job);
-          } catch (e) {
-            // Non-fatal -- the cancellation itself is what matters here.
-          }
-          setHtml("selectionStatus", '<span class="dim">Canceled -- the timeline is unchanged. No credits were spent.</span>');
-          return;
+      for (const unit of result.units) {
+        if (unit.diagnostics && unit.diagnostics.length > 0) {
+          console.log(
+            "Auphonic eligibility diagnostics (checks this build couldn't run, or how media type was resolved):",
+            unit.diagnostics
+          );
         }
-        forceNewTrackBelow = true;
+        if (!unit.eligible) {
+          skipLines.push(`Skipped: ${unit.clipName || "selected item"} - ${unit.reason}`);
+          continue;
+        }
+
+        // Handles (PRD 9.6) -- computeHandlePlan returns a no-op plan (plain
+        // clip range, no clamping) when requestedHandleSeconds is 0, so this
+        // always runs and downstream code never needs a separate handles-off
+        // branch.
+        const handlesPlan = await handles.computeHandlePlan({
+          trackItem: unit.trackItem,
+          requestedHandleSeconds: requestedHandleSeconds(),
+        });
+        if (handlesPlan.diagnostics.length > 0) {
+          console.log("Auphonic handles diagnostics:", handlesPlan.diagnostics);
+        }
+
+        // Collision detection (PRD 9.5) -- pre-flight, before any credits are
+        // spent. Checked against the widened range when handles are on.
+        const targetTrackIndex = unit.trackIndex + 1;
+        const collisionItem = await insertion.findCollisionOnAudioTrack(
+          result.sequence,
+          targetTrackIndex,
+          handlesPlan.widenedStartTime,
+          handlesPlan.widenedEndTime
+        );
+
+        let forceNewTrackBelow = false;
+        if (collisionItem) {
+          const proceed = await askInlineConfirm(
+            `"${unit.clipName}": destination track already has media at this time. Create a new track underneath and insert there?`
+          );
+          if (!proceed) {
+            await queueModule.recordDeclinedJob(
+              result.project,
+              {
+                clipName: unit.clipName,
+                sequence: result.sequence,
+                mediaPath: unit.mediaPath,
+                startTime: unit.startTime,
+                endTime: unit.endTime,
+                preset,
+                originalSelectionType: unit.originalSelectionType,
+                linkedAudioResolved: unit.linkedAudioResolved,
+                extraFormats: selectedExtraFormats(),
+                labelColor: selectedLabelColor(),
+              },
+              "Destination track already had media at this time; user chose not to create a new track."
+            );
+            renderQueueTable();
+            skipLines.push(`Canceled: ${unit.clipName} - destination track collision declined. No credits were spent.`);
+            continue;
+          }
+          forceNewTrackBelow = true;
+        }
+
+        readyBundles.push({
+          ...unit,
+          project: result.project,
+          sequence: result.sequence,
+          preset,
+          handlesPlan,
+          forceNewTrackBelow,
+          extraFormats: selectedExtraFormats(),
+          labelColor: selectedLabelColor(),
+        });
       }
 
       let credits = null;
@@ -356,36 +384,49 @@
         // Non-fatal -- estimate can still show without a fresh credit check.
       }
 
-      const est = costEstimate.estimate({ durationSeconds: handlesPlan.widenedDurationSeconds, availableCreditsHours: credits });
+      if (readyBundles.length === 0) {
+        setHtml(
+          "selectionStatus",
+          skipLines.length > 0
+            ? `<span class="bad">${skipLines.join("<br/>")}</span>`
+            : '<span class="bad">Nothing eligible in the current selection.</span>'
+        );
+        return;
+      }
 
-      state.pendingJob = {
-        ...result,
-        preset,
-        estimate: est,
-        handlesPlan,
-        forceNewTrackBelow,
-        extraFormats: selectedExtraFormats(),
-        labelColor: selectedLabelColor(),
-      };
+      let totalDuration = 0;
+      let totalBillable = 0;
+      const allWarnings = [];
+      readyBundles.forEach((bundle) => {
+        const est = costEstimate.estimate({
+          durationSeconds: bundle.handlesPlan.widenedDurationSeconds,
+          availableCreditsHours: credits,
+        });
+        bundle.estimate = est;
+        totalDuration += est.durationSeconds;
+        totalBillable += est.billableSeconds;
+        est.warnings.forEach((w) => allWarnings.push(`${bundle.clipName}: ${w}`));
+        bundle.handlesPlan.clampWarnings.forEach((w) => allWarnings.push(`${bundle.clipName}: ${w}`));
+      });
 
-      const eligibleLabel =
-        result.originalSelectionType === "video"
-          ? `${result.clipName} (video clip -- using linked audio)`
-          : result.clipName;
-      setHtml(
-        "selectionStatus",
-        `<span class="ok">Eligible: ${eligibleLabel} (${costEstimate.formatDuration(handlesPlan.widenedDurationSeconds)})</span>`
+      state.pendingUnits = readyBundles;
+
+      const readyNames = readyBundles.map((b) =>
+        b.originalSelectionType === "video" ? `${b.clipName} (video clip -- using linked audio)` : b.clipName
       );
+      const statusLines = [`<span class="ok">${readyBundles.length} clip(s) ready: ${readyNames.join(", ")}</span>`];
+      if (skipLines.length > 0) statusLines.push(`<span class="bad">${skipLines.join("<br/>")}</span>`);
+      setHtml("selectionStatus", statusLines.join("<br/>"));
 
       setHtml(
         "estimateText",
-        `Actual duration: ${costEstimate.formatDuration(est.durationSeconds)}<br/>` +
-          `Estimated billable time: ${costEstimate.formatDuration(est.billableSeconds)}` +
+        `Clips ready: ${readyBundles.length}<br/>` +
+          `Total actual duration: ${costEstimate.formatDuration(totalDuration)}<br/>` +
+          `Total estimated billable time: ${costEstimate.formatDuration(totalBillable)}` +
           (credits !== null ? `<br/>Available credits: ${credits} h` : "")
       );
       const warningList = el("warningList");
       warningList.innerHTML = "";
-      const allWarnings = est.warnings.concat(handlesPlan.clampWarnings);
       if (allWarnings.length > 0) {
         allWarnings.forEach((w) => {
           const li = document.createElement("li");
@@ -402,255 +443,114 @@
     }
   }
 
-  /* -------------------------------------------------------------- pipeline */
+  /* ------------------------------------------------------------------ queue */
 
-  async function runJob(pendingJob) {
-    const {
-      project,
-      sequence,
-      trackItem,
-      projectItem,
-      mediaPath,
-      trackIndex,
-      startTime,
-      endTime,
-      clipName,
-      preset,
-      handlesPlan,
-      forceNewTrackBelow,
-      originalSelectionType,
-      linkedAudioResolved,
-      extraFormats,
-      labelColor,
-    } = pendingJob;
-    clearLog("progressLog");
-    show("progressBox");
-    hide("openProductionBtn");
+  function queueHooks() {
+    return {
+      onStatus: (entry) => {
+        const label = jobModel.STATUS_LABELS[entry.job.status] || entry.job.status;
+        setHtml("progressStatus", `<span class="dim">${entry.job.originalClipName} -- ${label}</span>`);
+        renderQueueTable();
+      },
+      onLog: (entry, message, cls) => appendLog("progressLog", `[${entry.job.originalClipName}] ${message}`, cls),
+    };
+  }
 
-    const setProgress = (text) => setHtml("progressStatus", `<span class="dim">${text}</span>`);
-    const logStep = (text, cls) => appendLog("progressLog", text, cls);
+  function statusBadgeClass(status) {
+    if (status === "inserted") return "ok";
+    if (status === "failed") return "bad";
+    if (status === "canceled") return "dim";
+    return "warn";
+  }
 
-    let job = jobModel.createJob({
-      originalClipName: clipName,
-      sequenceGuid: sequence.guid || sequence.name || "unknown-sequence",
-      sourceProjectItemPath: mediaPath,
-      timelineStartTicks: typeof startTime.ticksNumber === "number" ? String(startTime.ticksNumber) : String(startTime.seconds),
-      timelineEndTicks: typeof endTime.ticksNumber === "number" ? String(endTime.ticksNumber) : String(endTime.seconds),
-      presetUuid: preset.uuid,
-      handlesSeconds: handlesPlan.leftSeconds > 0 || handlesPlan.rightSeconds > 0 ? Math.max(handlesPlan.leftSeconds, handlesPlan.rightSeconds) : 0,
-      originalSelectionType,
-      linkedAudioResolved,
-      extraFormats,
-      labelColor,
-    });
-    job.collisionDetected = Boolean(forceNewTrackBelow);
-    job.collisionDecision = forceNewTrackBelow ? "created_new_track" : null;
+  function renderQueueTable() {
+    const entries = queueModule.getEntries();
+    const tbody = el("queueTableBody");
+    tbody.innerHTML = "";
 
-    try {
-      await jobModel.saveJob(project, job);
-      logStep(`Job created: ${job.jobId}`, "dim");
-      if (linkedAudioResolved) {
-        logStep(`Video clip selected -- using linked audio "${clipName}".`, "dim");
-      }
-
-      setProgress("Exporting clip audio...");
-      jobModel.markStatus(job, "exporting");
-      await jobModel.saveJob(project, job);
-      const jobFolder = await paths.getJobFolder(project, job.jobId);
-      const inputFile = await paths.reserveFile(jobFolder, "input.wav");
-      // Placement start defaults to the plain (unwidened) start -- matches
-      // Phase 1 exactly when handles are off. Overwritten below with the
-      // ACTUAL achieved widen if handles are on, since export can back off
-      // further than the pre-flight estimate (handlesPlan.widenedStartTime)
-      // -- placement must match what was really exported, or the inserted
-      // clip won't line up with its own audio.
-      let placementStartTime = startTime;
-      if (handlesPlan.leftTicks > 0 || handlesPlan.rightTicks > 0) {
-        const handleResult = await exportModule.exportHandleWidenedRange({
-          project,
-          sequence,
-          trackItem,
-          projectItem,
-          leftTicks: handlesPlan.leftTicks,
-          rightTicks: handlesPlan.rightTicks,
-          outputFile: inputFile,
-        });
-        // Export can back off further than the pre-flight estimate (e.g. if
-        // a clamp it couldn't fully verify in advance turned out to be
-        // tighter in practice) -- record what was actually achieved, not
-        // just what was requested.
-        const achievedLeftSeconds = ppro.TickTime.createWithTicks(String(handleResult.achievedLeftTicks)).seconds;
-        const achievedRightSeconds = ppro.TickTime.createWithTicks(String(handleResult.achievedRightTicks)).seconds;
-        job.handlesActualLeftSeconds = achievedLeftSeconds;
-        job.handlesActualRightSeconds = achievedRightSeconds;
-        job.handlesClampWarnings = handlesPlan.clampWarnings;
-        logStep(`Handles: -${achievedLeftSeconds.toFixed(1)}s / +${achievedRightSeconds.toFixed(1)}s`, "dim");
-
-        const originalStartTicks = ticks.ticksNumberOf(startTime);
-        placementStartTime = ppro.TickTime.createWithTicks(String(Math.round(originalStartTicks - handleResult.achievedLeftTicks)));
-      } else {
-        await exportModule.exportRangeToFile(project, sequence, startTime, endTime, inputFile);
-      }
-      job.inputCachePath = inputFile.nativePath;
-      logStep(`Exported: ${inputFile.nativePath}`, "ok");
-
-      setProgress("Creating Auphonic production...");
-      jobModel.markStatus(job, "creating_production");
-      await jobModel.saveJob(project, job);
-      const outputBasename = `${clipName}_Auphonic_${preset.name}`.replace(/[\/:*?"<>|]/g, "_");
-      console.log("Auphonic: requested extra formats for this production:", JSON.stringify(extraFormats));
-      const productionUuid = await auphonicClient.createProduction(state.apiKey, {
-        presetUuid: preset.uuid,
-        title: `${clipName} - Auphonic`,
-        outputBasename,
-        extraFormats,
-      });
-      job.productionId = productionUuid;
-      logStep(`Production created: ${productionUuid}`, "ok");
-      const openBtn = el("openProductionBtn");
-      openBtn.onclick = () => uxp.shell.openExternal(buildProductionUrl(productionUuid));
-      show("openProductionBtn");
-
-      setProgress("Uploading audio to Auphonic...");
-      jobModel.markStatus(job, "uploading");
-      await jobModel.saveJob(project, job);
-      const inputBytes = await paths.readBinary(inputFile);
-      await auphonicClient.uploadInputFile(state.apiKey, productionUuid, inputBytes, "input.wav", (loaded, total) => {
-        setProgress(`Uploading... ${Math.round((loaded / total) * 100)}%`);
-      });
-      logStep("Upload complete.", "ok");
-
-      setProgress("Starting processing...");
-      jobModel.markStatus(job, "processing");
-      await jobModel.saveJob(project, job);
-      await auphonicClient.startProduction(state.apiKey, productionUuid);
-      await auphonicClient.pollUntilDone(state.apiKey, productionUuid, {
-        onPoll: (statusData) => {
-          setProgress(`Processing on Auphonic... (${statusData.status_string || statusData.status})`);
-          logStep(`  status: ${statusData.status_string || statusData.status}`, "dim");
-        },
-      });
-      logStep("Auphonic processing done.", "ok");
-
-      setProgress("Downloading cleaned audio...");
-      jobModel.markStatus(job, "downloading");
-      await jobModel.saveJob(project, job);
-      const detail = await auphonicClient.getProductionDetail(state.apiKey, productionUuid);
-      // Live-verification aid for the "open in browser" URL (see
-      // buildProductionUrl above), and now also for confirming (Phase 3) that
-      // output_files[] carries a `format` field that reliably distinguishes
-      // wav/mp3/aac when more than one is requested at once.
-      console.log("Auphonic: full production detail (checking output_files shape for each requested format):", JSON.stringify(detail));
-      // Match by `format` first; fall back to `ending` in case Auphonic
-      // echoes the container extension instead of the requested codec name
-      // (e.g. AAC requested with ending "m4a" -- never confirmed live before
-      // this phase, so both plausible response shapes are covered here
-      // rather than trusting only the one the PRD's request sample shows).
-      const EXT_FOR_FORMAT = { wav: "wav", mp3: "mp3", aac: "m4a" };
-      const findOutputFileMeta = (format) => {
-        const files = detail.output_files || [];
-        return files.find((f) => f.format === format) || files.find((f) => f.ending === EXT_FOR_FORMAT[format]) || null;
-      };
-
-      const wavMeta = findOutputFileMeta("wav");
-      if (!wavMeta) {
-        throw new AuphonicPluginError(CATEGORY.DOWNLOAD_FAILED, "Auphonic reported no WAV output file.");
-      }
-      const wavBytes = await auphonicClient.downloadOutputFile(state.apiKey, wavMeta.download_url);
-      const outputFile = await paths.writeBinary(jobFolder, "output.wav", wavBytes);
-      job.outputCachePath = outputFile.nativePath;
-      logStep(`Downloaded: ${outputFile.nativePath}`, "ok");
-
-      setProgress("Placing cleaned audio on the timeline...");
-      jobModel.markStatus(job, "placing");
-      await jobModel.saveJob(project, job);
-      const placement = await insertion.importAndPlace({
-        project,
-        sequence,
-        originalTrackItem: trackItem,
-        originalTrackIndex: trackIndex,
-        // Widened start (handles-off: identical to the plain start) --
-        // PRD 9.6: insert starting handle-seconds before the original start.
-        // Uses the ACTUAL achieved widen (placementStartTime), not the
-        // pre-flight estimate, since export can back off further than
-        // estimated -- see the export step above.
-        startTime: placementStartTime,
-        outputFilePath: outputFile.nativePath,
-        originalClipName: clipName,
-        presetName: preset.name,
-        forceNewTrackBelow,
-        binName: organization.DEFAULT_BIN_NAME,
-        colorLabel: labelColor,
-      });
-
-      jobModel.markStatus(job, "inserted");
-      await jobModel.saveJob(project, job);
-
-      logStep(
-        `Placed as "${placement.newName}" on audio track ${placement.targetTrackIndex + 1}` +
-          (placement.createdNewTrack ? " (new track created)" : ""),
-        "ok"
-      );
-      if (!placement.disableOk) {
-        logStep(
-          `Warning: could not disable the original clip's audio automatically (${placement.disableError || "unknown reason"}). Disable it by hand.`,
-          "warn"
-        );
-      } else {
-        logStep("Original audio disabled (clip kept, not deleted).", "ok");
-      }
-      placement.organizationWarnings.forEach((w) => logStep(`Warning: ${w}`, "warn"));
-
-      // Phase 3: MP3/AAC, generated alongside WAV at no extra Auphonic cost
-      // (PRD 5). Only WAV ever goes on the timeline -- these are imported
-      // into the shared bin for reference/delivery only. Each format is
-      // independently non-fatal: a problem here must never undo the WAV
-      // placement that already succeeded above.
-      for (const format of extraFormats) {
-        const meta = findOutputFileMeta(format);
-        if (!meta) {
-          logStep(`Warning: Auphonic reported no ${format.toUpperCase()} output file -- skipping.`, "warn");
-          continue;
-        }
-        try {
-          setProgress(`Downloading and importing ${format.toUpperCase()}...`);
-          const bytes = await auphonicClient.downloadOutputFile(state.apiKey, meta.download_url);
-          const ext = EXT_FOR_FORMAT[format];
-          const extraFile = await paths.writeBinary(jobFolder, `output.${ext}`, bytes);
-          const extra = await insertion.importExtraOutputFile({
-            project,
-            filePath: extraFile.nativePath,
-            originalClipName: clipName,
-            presetName: preset.name,
-            ext,
-            binName: organization.DEFAULT_BIN_NAME,
-            colorLabel: labelColor,
-          });
-          job.extraOutputCachePaths[format] = extraFile.nativePath;
-          logStep(`Imported "${extra.newName}" into the "${organization.DEFAULT_BIN_NAME}" bin.`, "ok");
-          extra.organizationWarnings.forEach((w) => logStep(`Warning: ${w}`, "warn"));
-        } catch (err) {
-          logStep(`Warning: could not import the ${format.toUpperCase()} file (${describeError(err)}).`, "warn");
-        }
-      }
-      if (extraFormats.length > 0) {
-        await jobModel.saveJob(project, job);
-      }
-
-      setProgress("Done.");
-      logStep("JOB COMPLETE.", "ok");
-    } catch (err) {
-      const category = err instanceof AuphonicPluginError ? err.category : CATEGORY.PROCESSING_FAILED;
-      const message = err instanceof AuphonicPluginError ? err.message : String(err.message || err);
-      jobModel.markFailed(job, category, message);
-      try {
-        await jobModel.saveJob(project, job);
-      } catch (e) {
-        // Non-fatal -- surfacing the original error to the user matters more.
-      }
-      setProgress("Failed.");
-      logStep(`${category}: ${message}`, "bad");
+    if (entries.length === 0) {
+      hide("queueSection");
+      return;
     }
+    show("queueSection");
+
+    entries.forEach((entry) => {
+      const { job, live } = entry;
+      const row = document.createElement("tr");
+
+      const nameCell = document.createElement("td");
+      nameCell.textContent = job.originalClipName;
+      row.appendChild(nameCell);
+
+      const statusCell = document.createElement("td");
+      const statusSpan = document.createElement("span");
+      statusSpan.className = statusBadgeClass(job.status);
+      statusSpan.textContent = jobModel.STATUS_LABELS[job.status] || job.status;
+      statusCell.appendChild(statusSpan);
+      if (job.status === "failed" && job.errorMessage) {
+        const detail = document.createElement("div");
+        detail.className = "dim queue-row-detail";
+        detail.textContent = job.errorMessage;
+        statusCell.appendChild(detail);
+      }
+      if (!live && job.productionId && !["inserted", "failed", "canceled"].includes(job.status)) {
+        const warning = document.createElement("div");
+        warning.className = "warn queue-row-detail";
+        warning.textContent =
+          "This clip may already have an Auphonic production in progress -- check auphonic.com before reprocessing it.";
+        statusCell.appendChild(warning);
+      }
+      row.appendChild(statusCell);
+
+      const actionsCell = document.createElement("td");
+      actionsCell.className = "queue-actions";
+
+      if (live && queueModule.CANCELABLE_STATUSES.includes(job.status)) {
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "secondary";
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.onclick = async () => {
+          await queueModule.cancelJob(entry);
+          renderQueueTable();
+        };
+        actionsCell.appendChild(cancelBtn);
+      }
+
+      if (live && job.status === "failed") {
+        const retryBtn = document.createElement("button");
+        retryBtn.className = "secondary";
+        retryBtn.textContent = "Retry";
+        retryBtn.onclick = async () => {
+          retryBtn.disabled = true;
+          await queueModule.retryJob(entry, state.apiKey, queueHooks());
+          renderQueueTable();
+        };
+        actionsCell.appendChild(retryBtn);
+      }
+
+      if (job.productionId) {
+        const openBtn = document.createElement("button");
+        openBtn.className = "secondary";
+        openBtn.textContent = "Open in Auphonic";
+        openBtn.onclick = () => uxp.shell.openExternal(buildProductionUrl(job.productionId));
+        actionsCell.appendChild(openBtn);
+      }
+
+      if (!live && !["inserted", "failed", "canceled"].includes(job.status)) {
+        const dismissBtn = document.createElement("button");
+        dismissBtn.className = "secondary";
+        dismissBtn.textContent = "Dismiss";
+        dismissBtn.onclick = async () => {
+          const project = await ppro.Project.getActiveProject();
+          await queueModule.dismissHistoryEntry(project, entry);
+          renderQueueTable();
+        };
+        actionsCell.appendChild(dismissBtn);
+      }
+
+      row.appendChild(actionsCell);
+      tbody.appendChild(row);
+    });
   }
 
   async function wireProcessSection() {
@@ -658,10 +558,20 @@
     await wireExtraFormatsSection();
     el("checkSelectionBtn").addEventListener("click", checkSelection);
     el("confirmBtn").addEventListener("click", async () => {
-      if (!state.pendingJob) return;
+      if (!state.pendingUnits || state.pendingUnits.length === 0) return;
+      const project = state.pendingUnits[0].project;
+      const apiKey = state.apiKey;
       el("confirmBtn").disabled = true;
-      await runJob(state.pendingJob);
-      el("confirmBtn").disabled = false;
+      try {
+        await queueModule.enqueue(project, state.pendingUnits);
+        state.pendingUnits = [];
+        hide("estimateBox");
+        renderQueueTable();
+        show("progressBox");
+        await queueModule.runQueue(project, apiKey, queueHooks());
+      } finally {
+        el("confirmBtn").disabled = false;
+      }
     });
   }
 
@@ -697,6 +607,15 @@
     await wireLabelColorSection();
     wireCacheSection();
     await tryAutoConnect();
+    try {
+      const project = await ppro.Project.getActiveProject();
+      if (project) {
+        await queueModule.loadHistory(project);
+        renderQueueTable();
+      }
+    } catch (e) {
+      // Non-fatal -- history is a bonus; the panel still works without it.
+    }
   }
 
   window.Auphonic = window.Auphonic || {};

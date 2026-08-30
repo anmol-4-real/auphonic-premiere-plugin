@@ -13,10 +13,38 @@
   const paths = window.Auphonic.paths;
   const { CATEGORY } = window.Auphonic.errors;
 
+  // Phase 4a (PRD 11): presentation-only display strings for the queue
+  // table. Internal status values (used for state-machine logic elsewhere)
+  // are unchanged -- this map exists so the UI can show the PRD's exact
+  // wording without renaming any working status string.
+  const STATUS_LABELS = {
+    queued: "Queued",
+    validating: "Validating",
+    exporting: "Exporting temp audio",
+    creating_production: "Creating production",
+    uploading: "Uploading",
+    processing: "Processing on Auphonic",
+    downloading: "Downloading",
+    placing: "Importing",
+    inserted: "Inserted",
+    failed: "Failed",
+    canceled: "Canceled",
+  };
+
+  // Phase 4a: enqueue() creates several jobs back-to-back, well under one
+  // second apart, so the old second-precision timestamp alone could collide
+  // for same-named clips (confirmed live: it did, for 4 same-named clips
+  // queued together -- they all got the same jobId, and since jobId keys the
+  // on-disk folder, they overwrote each other's input.wav/output.wav/job.json
+  // as they ran). A per-session counter guarantees uniqueness regardless of
+  // clock precision; the timestamp stays only for human-readable sorting.
+  let jobSequenceCounter = 0;
+
   function makeJobId(originalClipName) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "T").slice(0, 19);
+    jobSequenceCounter += 1;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const safeName = String(originalClipName || "clip").replace(/[^a-zA-Z0-9_-]/g, "_");
-    return `${stamp}_${safeName}`;
+    return `${stamp}_${String(jobSequenceCounter).padStart(4, "0")}_${safeName}`;
   }
 
   /*
@@ -31,6 +59,12 @@
     return {
       jobId,
       productionId: null,
+      // Phase 4a: set to true only immediately after startProduction()
+      // resolves successfully, and persisted right away (see
+      // src/core/queue.js). This is what makes retry safe against
+      // double-billing -- it's a fact we recorded ourselves, not a guess
+      // inferred from an Auphonic status code.
+      productionStarted: false,
       consolidationOffsetMs: 0,
       consolidationDurationMs: null,
       sourceType: "timeline",
@@ -55,7 +89,7 @@
       inputCachePath: null,
       outputCachePath: null,
       extraOutputCachePaths: {},
-      status: "created",
+      status: "queued",
       errorCategory: null,
       errorMessage: null,
       createdAt: new Date().toISOString(),
@@ -100,5 +134,14 @@
   }
 
   window.Auphonic = window.Auphonic || {};
-  window.Auphonic.jobModel = { createJob, saveJob, loadJob, markStatus, markFailed, markCanceled, makeJobId };
+  window.Auphonic.jobModel = {
+    createJob,
+    saveJob,
+    loadJob,
+    markStatus,
+    markFailed,
+    markCanceled,
+    makeJobId,
+    STATUS_LABELS,
+  };
 })();

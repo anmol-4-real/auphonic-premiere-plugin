@@ -55,6 +55,70 @@
   }
 
   /*
+   * Phase 4a (confirmed live, two rounds of live evidence -- see HANDOFF.md
+   * discipline): sequence.createSubsequence(true) copies in every currently
+   * SELECTED item, not just whatever falls inside the narrowed in/out range
+   * set right before it, and items keep their ORIGINAL ABSOLUTE timeline
+   * position (no renormalization to relative tick 0). Never surfaced in
+   * Phases 1-3 because exactly one item was ever selected during a
+   * single-clip run.
+   *
+   * First fix attempt: disable every copied item except the one nearest
+   * relative tick 0. Wrong on two counts, both confirmed live: (1) disabling
+   * a clip only silences it within the render, it does NOT shrink the
+   * exported duration -- the "fixed" export was still the full combined
+   * duration of every originally-selected clip, just with everything but one
+   * clip's own portion silenced. (2) matching against relative tick 0
+   * happened to work for the one clip whose own absolute start truly was 0,
+   * and wrongly disabled every OTHER job's own legitimate clip too (since
+   * their absolute start isn't near 0), leaving them fully silent --
+   * exactly the kind of input Auphonic's own processing rejected with a
+   * generic error.
+   *
+   * Real fix: exportHandleWidenedRange already proves the correct mechanism
+   * for bounding export duration -- narrow the SUBSEQUENCE's OWN in/out
+   * (not the original sequence's) to the exact range that should be
+   * rendered, confirmed live to work (Phase 2's widened-handles audio was
+   * confirmed audible exactly at its intended boundaries, not the whole
+   * seed range). Applying that same proven step here, narrowed to the
+   * target clip's own absolute [startTime, endTime), correctly bounds the
+   * export regardless of whatever else got copied in by selection.
+   */
+  async function narrowSubsequenceToTargetRange(project, subsequence, startTime, endTime) {
+    // Diagnostic (not yet confirmed live for every case -- one batch job in
+    // 4 came back at the full pre-narrow duration despite this transaction
+    // reporting success): log requested vs. actually-applied in/out so a
+    // mismatch is visible directly, rather than inferred from output file
+    // size after the fact a second time.
+    const beforeIn = ticks.ticksNumberOf(await subsequence.getInPoint());
+    const beforeOut = ticks.ticksNumberOf(await subsequence.getOutPoint());
+
+    let narrowOk = false;
+    project.lockedAccess(() => {
+      narrowOk = project.executeTransaction((compoundAction) => {
+        compoundAction.addAction(subsequence.createSetInPointAction(startTime));
+        compoundAction.addAction(subsequence.createSetOutPointAction(endTime));
+      }, "Narrow export subsequence to the target clip's own range");
+    });
+    if (!narrowOk) {
+      throw new AuphonicPluginError(
+        CATEGORY.EXPORT_FAILED,
+        "Could not narrow the export subsequence to the target clip's own range."
+      );
+    }
+
+    const afterIn = ticks.ticksNumberOf(await subsequence.getInPoint());
+    const afterOut = ticks.ticksNumberOf(await subsequence.getOutPoint());
+    const requestedIn = ticks.ticksNumberOf(startTime);
+    const requestedOut = ticks.ticksNumberOf(endTime);
+    console.log(
+      `Auphonic export narrow diagnostic: requested in/out = ${requestedIn}/${requestedOut}, ` +
+        `subsequence before = ${beforeIn}/${beforeOut}, after = ${afterIn}/${afterOut}` +
+        (afterIn !== requestedIn || afterOut !== requestedOut ? " -- MISMATCH, narrow did not apply as requested." : " -- matches.")
+    );
+  }
+
+  /*
    * Exports the audio range [startTime, endTime) of `sequence` to `outputFile`
    * (a UXP File entry -- its .nativePath is what's actually handed to the
    * encoder). Leaves the sequence's own In/Out exactly as found, regardless of
@@ -108,6 +172,8 @@
       // Subsequence is independent from here on -- restore the real sequence's
       // in/out immediately rather than leaving it narrowed for the rest of export.
       restoreSeqInOut();
+
+      await narrowSubsequenceToTargetRange(project, subsequence, startTime, endTime);
 
       if (typeof project.setActiveSequence === "function") {
         try {

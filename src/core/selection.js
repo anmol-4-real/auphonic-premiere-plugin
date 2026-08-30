@@ -48,6 +48,11 @@
  * the resolved AUDIO item, never the video item -- the video is never
  * touched, exactly as PRD 9.1/9.5 require.
  *
+ * Phase 4a (PRD 11): resolveQueueCandidates() replaces resolveSelection() and
+ * generalizes the old exactly-2-items collapseLinkedPairSelection to any N
+ * selected items -- see partitionSelectionIntoUnits below. classifyAndValidate
+ * itself is unchanged; it already worked per-clip.
+ *
  * Loaded as a plain <script> tag -- see the note at the top of
  * lib/secureStorage.js for why. Depends on window.Auphonic.errors and
  * window.Auphonic.ticks, which must be loaded first. Published on
@@ -357,40 +362,56 @@
   }
 
   /*
-   * Clicking a video clip in Premiere's normal UI selects it AND its linked
-   * audio together (2 items), not just the video -- confirmed live (a
-   * selection that worked via Option-click, selecting the video alone,
-   * failed via a normal click with "2 clips are selected"). Collapses that
-   * specific case down to "the video item was selected" so
-   * classifyAndValidate's linked-audio resolution still runs, instead of
-   * being rejected outright as an unsupported multi-selection. Returns the
-   * video item, or null if these 2 items aren't actually a linked pair (a
-   * genuine unrelated 2-clip selection, which stays rejected).
+   * Phase 4a: partitions an arbitrary N-item timeline selection into
+   * independent units. Generalizes the old exactly-2-items
+   * collapseLinkedPairSelection: every selected video item is paired with
+   * its own linked audio (same resolveLinkedAudio media-path+overlap match
+   * used everywhere else in this file) if that linked audio is ALSO present
+   * in the raw selection, so a normal click on a video clip (which selects
+   * video+audio together) still produces exactly one unit, not two. Any
+   * selected item left over after pairing -- plain audio clips, or a video
+   * whose linked audio wasn't itself selected -- becomes its own unit.
+   * classifyAndValidate still does the real eligibility work per unit,
+   * including resolving linked audio for a lone-selected video item -- this
+   * function only decides how many independent units the raw selection
+   * represents.
    */
-  async function collapseLinkedPairSelection(sequence, trackItems, diagnostics) {
-    const [a, b] = trackItems;
-    const typeA = detectMediaTypeByClass(a, diagnostics);
-    const typeB = detectMediaTypeByClass(b, diagnostics);
-    let videoItem = null;
-    let audioItem = null;
-    if (typeA === "video" && typeB === "audio") {
-      videoItem = a;
-      audioItem = b;
-    } else if (typeB === "video" && typeA === "audio") {
-      videoItem = b;
-      audioItem = a;
-    } else {
-      return null;
+  async function partitionSelectionIntoUnits(sequence, trackItems, diagnostics) {
+    const videoItems = [];
+    const leftover = [];
+    for (const item of trackItems) {
+      const type = detectMediaTypeByClass(item, diagnostics);
+      if (type === "video") {
+        videoItems.push(item);
+      } else {
+        leftover.push(item);
+      }
     }
 
-    const linked = await resolveLinkedAudio(sequence, videoItem, diagnostics);
-    if (linked && (await sameTrackItem(linked.trackItem, audioItem))) {
-      return videoItem;
+    for (const videoItem of videoItems) {
+      const linked = await resolveLinkedAudio(sequence, videoItem, diagnostics);
+      if (!linked) continue;
+      for (let i = leftover.length - 1; i >= 0; i--) {
+        if (await sameTrackItem(leftover[i], linked.trackItem)) {
+          leftover.splice(i, 1);
+          break;
+        }
+      }
     }
-    return null;
+
+    return [...videoItems, ...leftover];
   }
 
-  async function resolveSelection() {
+  /*
+   * Replaces the old single-clip resolveSelection(). Returns one entry per
+   * independent unit in the current timeline selection -- eligible AND
+   * ineligible units both included, each carrying classifyAndValidate's own
+   * per-clip result (including its own named skip reason), exactly like the
+   * single-clip flow's skip messages worked before. Throws only for the
+   * selection-level cases that make no sense to report per-unit: no open
+   * project/sequence, or nothing selected at all.
+   */
+  async function resolveQueueCandidates() {
     const project = await ppro.Project.getActiveProject();
     if (!project) {
       throw new AuphonicPluginError(CATEGORY.SELECTION, "No project is open.");
@@ -405,28 +426,18 @@
       throw new AuphonicPluginError(CATEGORY.SELECTION, "Nothing is selected on the timeline.");
     }
 
-    let trackItem = trackItems[0];
-    if (trackItems.length === 2) {
-      const collapseDiagnostics = [];
-      const videoItem = await collapseLinkedPairSelection(sequence, trackItems, collapseDiagnostics);
-      if (!videoItem) {
-        throw new AuphonicPluginError(
-          CATEGORY.UNSUPPORTED_CLIP,
-          `${trackItems.length} clips are selected. This version handles one clip at a time -- select just one and try again.`
-        );
-      }
-      trackItem = videoItem;
-    } else if (trackItems.length > 2) {
-      throw new AuphonicPluginError(
-        CATEGORY.UNSUPPORTED_CLIP,
-        `${trackItems.length} clips are selected. This version handles one clip at a time -- select just one and try again.`
-      );
+    const diagnostics = [];
+    const unitItems = await partitionSelectionIntoUnits(sequence, trackItems, diagnostics);
+
+    const units = [];
+    for (const unitItem of unitItems) {
+      const validation = await classifyAndValidate(sequence, unitItem);
+      units.push({ trackItem: unitItem, ...validation });
     }
 
-    const validation = await classifyAndValidate(sequence, trackItem);
-    return { project, sequence, trackItem, ...validation };
+    return { project, sequence, units, diagnostics };
   }
 
   window.Auphonic = window.Auphonic || {};
-  window.Auphonic.selection = { resolveSelection, classifyAndValidate, locateTrackItem, resolveLinkedAudio };
+  window.Auphonic.selection = { resolveQueueCandidates, classifyAndValidate, locateTrackItem, resolveLinkedAudio };
 })();
