@@ -62,7 +62,7 @@
 
   /*
    * fields: originalClipName, sequenceGuid, sourceProjectItemPath,
-   *         timelineStartTicks, timelineEndTicks, presetUuid, handlesSeconds,
+   *         timelineStartTicks, timelineEndTicks, presetUuid,
    *         originalSelectionType, linkedAudioResolved (Phase 2), extraFormats,
    *         labelColor (Phase 3), batchId (Phase 4b) -- each has a sensible
    *         default so earlier
@@ -88,10 +88,6 @@
       sourceProjectItemPath: fields.sourceProjectItemPath,
       timelineStartTicks: fields.timelineStartTicks,
       timelineEndTicks: fields.timelineEndTicks,
-      handlesSeconds: fields.handlesSeconds || 0,
-      handlesActualLeftSeconds: 0,
-      handlesActualRightSeconds: 0,
-      handlesClampWarnings: [],
       originalSelectionType: fields.originalSelectionType || "audio",
       linkedAudioResolved: Boolean(fields.linkedAudioResolved),
       collisionDetected: false,

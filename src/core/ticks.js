@@ -1,6 +1,6 @@
 /*
- * Shared tick-arithmetic helpers (Phase 2). Collision detection, handles
- * clamping, and linked-audio resolution all need the same two primitives --
+ * Shared tick-arithmetic helpers (Phase 2). Collision detection and
+ * linked-audio resolution both need the same two primitives --
  * centralized here instead of three slightly-different copies, which is
  * exactly the kind of drift that caused Phase 1's media-type bug (see
  * HANDOFF.md bug #2: two subtly different position-matching checks disagreed

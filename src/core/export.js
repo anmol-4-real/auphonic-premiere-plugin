@@ -15,24 +15,6 @@
  * somewhere else. getPluginFolder() has not been exercised live yet in this
  * project -- worth confirming on the first real export test.
  *
- * Phase 2 handles (PRD 9.6): widening the sequence-time export range fed to
- * exportRangeToFile does NOT work -- a subsequence created from a narrowed
- * sequence range only ever contains what's actually edited onto the
- * timeline in that window, not the real trimmed-off source audio sitting
- * unused in the source file. exportHandleWidenedRange below works around
- * this using only already-proven primitives: create a disposable
- * subsequence exactly as exportRangeToFile does, disable whatever got
- * copied into it (so it can't contaminate the render either way -- whether
- * exportSequence respects a further in/out narrow or renders the whole
- * subsequence), insert a SECOND placement of the same clipProjectItem on a
- * fresh scratch track far past any existing content, widen THAT scratch
- * item's own in/out to the handle range (never the original's), then narrow
- * the subsequence to bracket exactly the widened scratch item before
- * exporting. See HANDOFF.md/the Phase 2 plan for the full reasoning -- this
- * is the one genuinely new hypothesis in Phase 2 and needs live
- * verification (listen to the exported WAV for real widened content at both
- * edges) before any UI is built on top of it.
- *
  * Loaded as a plain <script> tag -- see the note at the top of
  * lib/secureStorage.js for why. Depends on window.Auphonic.errors and
  * window.Auphonic.ticks, which must be loaded first. Published on
@@ -75,14 +57,11 @@
    * exactly the kind of input Auphonic's own processing rejected with a
    * generic error.
    *
-   * Real fix: exportHandleWidenedRange already proves the correct mechanism
-   * for bounding export duration -- narrow the SUBSEQUENCE's OWN in/out
-   * (not the original sequence's) to the exact range that should be
-   * rendered, confirmed live to work (Phase 2's widened-handles audio was
-   * confirmed audible exactly at its intended boundaries, not the whole
-   * seed range). Applying that same proven step here, narrowed to the
-   * target clip's own absolute [startTime, endTime), correctly bounds the
-   * export regardless of whatever else got copied in by selection.
+   * Real fix: narrow the SUBSEQUENCE's OWN in/out (not the original
+   * sequence's) to the exact range that should be rendered -- narrowed here
+   * to the target clip's own absolute [startTime, endTime), this correctly
+   * bounds the export regardless of whatever else got copied in by
+   * selection.
    */
   async function narrowSubsequenceToTargetRange(project, subsequence, startTime, endTime) {
     // Diagnostic (not yet confirmed live for every case -- one batch job in
@@ -256,31 +235,19 @@
   }
 
   /*
-   * Tries to widen one side of scratchItem's source trim by extraTicks; on
-   * failure (Premiere rejects the new in/out -- e.g. it would exceed the
-   * clip's real source media, which handles.js's own clamp couldn't fully
-   * verify for the right side), halves the amount and retries rather than
-   * throwing. Live evidence this is needed: an untrimmed clip reached this
-   * step with a left handle that should have been 0 and crashed with
-   * "Invalid parameter" trying to set a negative in-point -- this backoff
-   * means a clamp being wrong or unavailable degrades the handle amount
-   * instead of failing the whole job. Returns the amount actually achieved.
-   *
-   * Phase 4b (live-confirmed bug): ALWAYS attempts buildAction at least once,
-   * even when requestedExtraTicks is 0 -- the old `while (extra > 0)` skipped
-   * calling buildAction entirely whenever no widening was requested, which
-   * left a freshly-inserted scratch item at whatever in/out it happened to
-   * default to. That was invisible for a single clip whose projectItem had
-   * never been placed anywhere else (its default already matched), but a
-   * consolidated batch reuses the same source file across several clips with
-   * DIFFERENT trims -- a fresh scratch copy's default trim is then ambiguous,
-   * and with handles off (the common case) nothing ever corrected it to THIS
-   * unit's own actual [originalInPoint, originalOutPoint). Confirmed live:
-   * wrong segment lengths and one distorted (likely overlapping) clip in a
-   * batch that reused two source files across multiple clips. Calling
-   * buildAction(0) sets the in/out to its own already-correct baseline value
-   * -- a harmless no-op for the single-clip case that already worked, and
-   * the actual fix for the batch case.
+   * Tries to set one side of scratchItem's source trim to originalPoint +/-
+   * extraTicks; on failure (Premiere rejects the new in/out), halves the
+   * amount and retries rather than throwing. The handles feature that
+   * originally motivated a nonzero extraTicks has since been removed
+   * (extraTicks is always 0 from every current call site), but the ALWAYS
+   * attempts buildAction at least once behavior below is still load-bearing:
+   * a consolidated batch reuses the same source file across several clips
+   * with DIFFERENT trims, and a fresh scratch copy's default trim can
+   * mismatch THIS unit's own actual [originalInPoint, originalOutPoint) --
+   * confirmed live as wrong segment lengths and a distorted (overlapping)
+   * clip in a batch that reused two source files. Calling buildAction(0)
+   * re-asserts the unit's own correct baseline in/out regardless, which is
+   * what this function exists for now. Returns the amount actually achieved.
    */
   async function widenSideWithBackoff(project, label, requestedExtraTicks, buildAction) {
     let extra = requestedExtraTicks;
@@ -302,170 +269,12 @@
   }
 
   /*
-   * Exports [originalInPoint - leftTicks, originalOutPoint + rightTicks] of
-   * trackItem's own source media -- real widened audio, not just a wider
-   * slice of the timeline -- to outputFile. Never touches trackItem itself;
-   * all widening happens on a disposable scratch copy. leftTicks/rightTicks
-   * are already clamped (handles.js's computeHandlePlan) and may be 0.
-   * Returns { outputFile, achievedLeftTicks, achievedRightTicks } -- the
-   * actual amounts achieved, which may be less than requested if the
-   * backoff above kicked in.
-   */
-  async function exportHandleWidenedRange({ project, sequence, trackItem, projectItem, leftTicks, rightTicks, outputFile }) {
-    const encoder = ppro.EncoderManager.getManager();
-    if (!encoder.isAMEInstalled) {
-      throw new AuphonicPluginError(CATEGORY.AME_UNAVAILABLE, "Adobe Media Encoder is not installed or not compatible.");
-    }
-
-    const originalStartTime = await trackItem.getStartTime();
-    const originalEndTime = await trackItem.getEndTime();
-    const originalSeqIn = await sequence.getInPoint();
-    const originalSeqOut = await sequence.getOutPoint();
-    let subsequence = null;
-    let seqInOutRestored = false;
-
-    const restoreSeqInOut = () => {
-      if (seqInOutRestored) return;
-      try {
-        project.lockedAccess(() => {
-          project.executeTransaction((compoundAction) => {
-            compoundAction.addAction(sequence.createSetInPointAction(originalSeqIn));
-            compoundAction.addAction(sequence.createSetOutPointAction(originalSeqOut));
-          }, "Restore sequence in/out after handle export");
-        });
-        seqInOutRestored = true;
-      } catch (e) {
-        // Non-fatal -- see exportRangeToFile's identical note above.
-      }
-    };
-
-    try {
-      // Seed subsequence from the clip's own plain (unwidened) range -- the
-      // exact narrow-then-createSubsequence step already proven by
-      // exportRangeToFile. What gets copied in is neutralized below.
-      let setOk = false;
-      project.lockedAccess(() => {
-        setOk = project.executeTransaction((compoundAction) => {
-          compoundAction.addAction(sequence.createSetInPointAction(originalStartTime));
-          compoundAction.addAction(sequence.createSetOutPointAction(originalEndTime));
-        }, "Narrow sequence in/out to seed handle scratch subsequence");
-      });
-      if (!setOk) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "Could not narrow the sequence in/out to seed the scratch subsequence.");
-      }
-
-      subsequence = await sequence.createSubsequence(true);
-      if (!subsequence) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "createSubsequence() returned nothing.");
-      }
-      restoreSeqInOut();
-
-      const bufferTicks = (await neutralizeSeedContentAndFindBuffer(project, subsequence)) + ticks.ticksNumberOf(ppro.TickTime.createWithSeconds(30));
-      const bufferTime = ppro.TickTime.createWithTicks(String(Math.round(bufferTicks)));
-
-      const scratchTrackIndex = await subsequence.getAudioTrackCount();
-      const sequenceEditor = ppro.SequenceEditor.getEditor(subsequence);
-      let insertOk = false;
-      project.lockedAccess(() => {
-        insertOk = project.executeTransaction((compoundAction) => {
-          // Plain ProjectItem, not the ClipProjectItem cast -- confirmed live
-          // that passing the cast wrapper here throws "Invalid parameter"
-          // (same class of type-strictness Phase 1 hit with encodeFile/
-          // importFiles). insertion.js's own working insert call uses a
-          // plain ProjectItem too.
-          compoundAction.addAction(sequenceEditor.createInsertProjectItemAction(projectItem, bufferTime, 0, scratchTrackIndex, true));
-        }, "Insert scratch clip for handle widening");
-      });
-      if (!insertOk) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "Could not insert the scratch clip needed to render handles.");
-      }
-
-      const scratchTrack = await subsequence.getAudioTrack(scratchTrackIndex);
-      const scratchItems = (await scratchTrack.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) || [];
-      const scratchItem = scratchItems[0];
-      if (!scratchItem) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "Scratch clip was inserted but could not be located afterward.");
-      }
-
-      const originalInPointTicks = ticks.ticksNumberOf(await trackItem.getInPoint());
-      const originalOutPointTicks = ticks.ticksNumberOf(await trackItem.getOutPoint());
-
-      // Each side widens independently with its own backoff -- a rejected
-      // in-point (e.g. handles.js's clamp was still too generous, or the
-      // media-boundary lookup it depends on for the right side wasn't
-      // available) reduces that side's handle rather than failing the job.
-      const achievedLeftTicks = await widenSideWithBackoff(project, "Widen scratch clip in-point to handle range", leftTicks, (extra) =>
-        scratchItem.createSetInPointAction(ppro.TickTime.createWithTicks(String(Math.round(originalInPointTicks - extra))))
-      );
-      const achievedRightTicks = await widenSideWithBackoff(project, "Widen scratch clip out-point to handle range", rightTicks, (extra) =>
-        scratchItem.createSetOutPointAction(ppro.TickTime.createWithTicks(String(Math.round(originalOutPointTicks + extra))))
-      );
-
-      const scratchStart = await scratchItem.getStartTime();
-      const scratchEnd = await scratchItem.getEndTime();
-
-      let narrowOk = false;
-      project.lockedAccess(() => {
-        narrowOk = project.executeTransaction((compoundAction) => {
-          compoundAction.addAction(subsequence.createSetInPointAction(scratchStart));
-          compoundAction.addAction(subsequence.createSetOutPointAction(scratchEnd));
-        }, "Narrow scratch subsequence to widened handle range");
-      });
-      if (!narrowOk) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "Could not narrow the scratch subsequence to the widened handle range.");
-      }
-
-      if (typeof project.setActiveSequence === "function") {
-        try {
-          await project.setActiveSequence(sequence);
-        } catch (e) {
-          // Non-fatal.
-        }
-      }
-
-      const exportType = ppro.Constants && ppro.Constants.ExportType && ppro.Constants.ExportType.IMMEDIATELY;
-      if (exportType === undefined) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "ppro.Constants.ExportType.IMMEDIATELY is not available on this build.");
-      }
-
-      const presetPath = await getBundledPresetPath();
-      const done = await encoder.exportSequence(subsequence, exportType, outputFile.nativePath, presetPath);
-      if (!done) {
-        throw new AuphonicPluginError(CATEGORY.EXPORT_FAILED, "exportSequence() reported failure.");
-      }
-      return { outputFile, achievedLeftTicks, achievedRightTicks };
-    } catch (err) {
-      throw wrap(CATEGORY.EXPORT_FAILED, err, "Handle-widened export failed");
-    } finally {
-      if (project && subsequence) {
-        if (typeof project.closeSequence === "function") {
-          try {
-            await project.closeSequence(subsequence);
-          } catch (e) {
-            // Non-fatal.
-          }
-        }
-        try {
-          const deleted = await project.deleteSequence(subsequence);
-          if (deleted === false) {
-            console.warn(`Auphonic: temporary handle scratch subsequence "${subsequence.name}" may not have been deleted.`);
-          }
-        } catch (e) {
-          // Non-fatal.
-        }
-      }
-      restoreSeqInOut();
-    }
-  }
-
-  /*
-   * Phase 4b: locates the scratch item just inserted near expectedStartTicks.
-   * exportHandleWidenedRange could safely take scratchItems[0] because it
-   * only ever placed one item on the scratch track -- exportConsolidatedRange
-   * below places N, so the item belonging to a given unit has to be found by
-   * position, not array order (two units can share the same source media,
-   * so a media-path match wouldn't disambiguate them either). Logs a warning
-   * rather than silently trusting the closest match, mirroring
+   * Phase 4b: locates the scratch item just inserted near expectedStartTicks
+   * -- needed because exportConsolidatedRange below places N items on one
+   * shared scratch track, so the item belonging to a given unit has to be
+   * found by position, not array order (two units can share the same source
+   * media, so a media-path match wouldn't disambiguate them either). Logs a
+   * warning rather than silently trusting the closest match, mirroring
    * narrowSubsequenceToTargetRange's own diagnostic style above.
    */
   async function findScratchItemNear(track, expectedStartTicks, label) {
@@ -489,18 +298,17 @@
   }
 
   /*
-   * Phase 4b (PRD 9.3/11): concatenates N clips' own widened ranges into ONE
-   * exported file for consolidated batch mode (many jobs sharing one
-   * Auphonic production). Builds on exactly the same primitives
-   * exportHandleWidenedRange already proves live -- one disposable seed
-   * subsequence, neutralizeSeedContentAndFindBuffer, per-side
-   * widenSideWithBackoff -- but chains N scratch placements on ONE shared
-   * scratch track instead of placing just one.
+   * Phase 4b (PRD 9.3/11): concatenates N clips' own ranges into ONE exported
+   * file for consolidated batch mode (many jobs sharing one Auphonic
+   * production) -- one disposable seed subsequence,
+   * neutralizeSeedContentAndFindBuffer, per-side widenSideWithBackoff, but
+   * chaining N scratch placements on ONE shared scratch track instead of
+   * placing just one.
    *
-   * Each unit is inserted, located, and widened in strict sequence before the
-   * next unit is touched -- required both for the cursor math (which chains
-   * off each unit's REAL achieved end tick, not a merely-planned one, so a
-   * genuinely correct widen can only open a gap, never overlap, and can't
+   * Each unit is inserted, located, and corrected in strict sequence before
+   * the next unit is touched -- required both for the cursor math (which
+   * chains off each unit's REAL achieved end tick, not a merely-planned one,
+   * so a correct placement can only open a gap, never overlap, and can't
    * accumulate across a long batch) and for findScratchItemNear above to
    * unambiguously identify which scratch item belongs to which unit.
    *
@@ -509,21 +317,22 @@
    * mismatch the specific unit it's standing in for (see the mismatch
    * diagnostic below) -- and correcting it to the right absolute values
    * drags the item's timeline position backward by the size of that
-   * mismatch (in/out and timeline start move together, the same mechanic
-   * exportHandleWidenedRange's own widening already relies on), which CAN
-   * overlap the previous unit. Each unit's achieved start is explicitly
-   * checked against the previous unit's own end after correction, and
-   * shifted forward to close the gap if it landed early -- this is what
+   * mismatch (a track item's in-point and its timeline start move together),
+   * which CAN overlap the previous unit. Each unit's achieved start is
+   * explicitly checked against the previous unit's own end after correction,
+   * and shifted forward to close the gap if it landed early -- this is what
    * actually enforces the no-overlap guarantee; the cursor math alone does
    * not, once a mismatch is possible.
    *
    * units: [{ trackItem, projectItem, leftTicks, rightTicks }, ...], one
-   * entry per batch member (already-clamped handle ticks from
-   * handles.computeHandlePlan, unchanged -- 0/0 for a unit with handles off).
-   * Returns { outputFile, perUnit: [{ achievedLeftTicks, achievedRightTicks,
-   * offsetTicks, durationTicks }, ...] } in the same order as `units` --
-   * offsetTicks/durationTicks locate each unit's own segment inside the
-   * exported file.
+   * entry per batch member. leftTicks/rightTicks are always 0 now that the
+   * handles feature has been removed -- kept as parameters (rather than
+   * ripped out) because widenSideWithBackoff's own baseline-reassert-at-zero
+   * behavior is still required for the default-mismatch correction above,
+   * regardless of handles. Returns { outputFile, perUnit:
+   * [{ achievedLeftTicks, achievedRightTicks, offsetTicks, durationTicks },
+   * ...] } in the same order as `units` -- offsetTicks/durationTicks locate
+   * each unit's own segment inside the exported file.
    */
   async function exportConsolidatedRange({ project, sequence, units, outputFile }) {
     const encoder = ppro.EncoderManager.getManager();
@@ -537,10 +346,9 @@
     // Seed subsequence off the first unit's own current range. This narrow
     // is functionally inert for WHAT gets copied in -- createSubsequence(true)
     // copies every currently SELECTED item regardless (Phase 4a, confirmed
-    // live) -- kept only for consistency with exportHandleWidenedRange's own
-    // pattern above. Whatever gets copied in (however many originally-
-    // selected items that is) is neutralized below exactly as it already is
-    // for the single-clip case.
+    // live) -- kept only for consistency with exportRangeToFile's own
+    // seed-then-neutralize pattern above. Whatever gets copied in (however
+    // many originally-selected items that is) is neutralized below.
     const seedStartTime = await units[0].trackItem.getStartTime();
     const seedEndTime = await units[0].trackItem.getEndTime();
     const originalSeqIn = await sequence.getInPoint();
@@ -593,12 +401,28 @@
 
       for (let i = 0; i < units.length; i++) {
         const unit = units[i];
-        // targetStartTick is always >= cursorTicks (the previous unit's own
-        // achieved end, or the initial buffer for the first unit) since
-        // unit.leftTicks >= 0 -- converging exactly to it (below) therefore
-        // guarantees no overlap with the previous unit by construction, with
-        // no separate overlap check needed.
-        const targetStartTick = Math.round(cursorTicks + unit.leftTicks);
+        /*
+         * Phase 4c (live-confirmed bug -- the first time handles-on was ever
+         * combined with consolidated batch mode): what the ACHIEVED start
+         * must converge to is cursorTicks itself -- exactly adjacent to the
+         * previous unit's own achieved end, zero gap. An earlier version of
+         * this loop used cursorTicks + unit.leftTicks as BOTH the initial
+         * insert guess AND the success/retry target -- fine for the insert
+         * guess (see insertHeadroomTicks below, which keeps that same
+         * starting value), but wrong as the ACHIEVED target: since the retry
+         * loop forces achievedStartTicks to match whatever target it's given
+         * (regardless of the underlying widen-shift mechanism), targeting
+         * cursorTicks + leftTicks left a real, silent leftTicks-sized gap
+         * before every non-first unit. Confirmed live: a 5-clip batch with
+         * 2.0s handles came back exactly 8.0s long (4 gaps x 2.0s), matching
+         * to the millisecond. leftTicks === 0 made this identical to the old
+         * behavior -- a no-op for that case, the actual fix for handles-on.
+         * The handles feature has since been removed entirely (leftTicks is
+         * always 0 from every call site now), but this fix stays correct
+         * either way -- it was never handles-specific, just exposed by them.
+         */
+        const desiredStartTick = Math.round(cursorTicks);
+        const insertHeadroomTicks = unit.leftTicks;
         const originalInPointTicks = ticks.ticksNumberOf(await unit.trackItem.getInPoint());
         const originalOutPointTicks = ticks.ticksNumberOf(await unit.trackItem.getOutPoint());
 
@@ -611,9 +435,8 @@
          * used by more than one clip in the batch. Forcing the in/out to
          * this unit's own correct absolute values is still necessary (bug
          * #1's fix) -- but since a track item's in-point and its timeline
-         * start move together (the same mechanic exportHandleWidenedRange's
-         * widening already relies on), that correction can drag the
-         * timeline position away from where the item was actually inserted,
+         * start move together, that correction can drag the timeline
+         * position away from where the item was actually inserted,
          * confirmed live via exact matching tick deltas.
          *
          * Attempt 2 tried to PREDICT the resulting shift from the scratch
@@ -630,7 +453,7 @@
          * This version never predicts and never falls back to a
          * content-shifting correction. It inserts, corrects, and MEASURES
          * the actual achieved start. If that doesn't land exactly on
-         * targetStartTick, it disables that attempt (never using or further
+         * desiredStartTick, it disables that attempt (never using or further
          * correcting it, so it can never contribute wrong content) and
          * retries at a freshly-recomputed position based on what was JUST
          * observed -- not a predicted model of why the mismatch happened.
@@ -643,7 +466,13 @@
         let achievedRightTicks = 0;
         let achievedStartTicks = null;
         let achievedEndTicks = null;
-        let currentInsertTick = targetStartTick;
+        // Initial insert guess only -- the same cursorTicks + leftTicks
+        // headroom this project has always used, purely to avoid the FIRST
+        // attempt landing on top of the previous unit's own already-
+        // finalized scratch item. The retry loop below converges the
+        // ACHIEVED position to desiredStartTick regardless of where this
+        // starting guess lands.
+        let currentInsertTick = Math.round(desiredStartTick + insertHeadroomTicks);
         // Generous headroom: correcting one discarded attempt could itself
         // change what the NEXT attempt's own default reflects (if the
         // underlying mechanism is "last corrected trim wins"), which could
@@ -700,7 +529,7 @@
           const candidateStartTicks = ticks.ticksNumberOf(await candidateItem.getStartTime());
           const candidateEndTicks = ticks.ticksNumberOf(await candidateItem.getEndTime());
 
-          if (Math.abs(candidateStartTicks - targetStartTick) <= 1) {
+          if (Math.abs(candidateStartTicks - desiredStartTick) <= 1) {
             scratchItem = candidateItem;
             achievedLeftTicks = candidateAchievedLeftTicks;
             achievedRightTicks = candidateAchievedRightTicks;
@@ -714,10 +543,10 @@
             break;
           }
 
-          const observedShiftTicks = targetStartTick - candidateStartTicks;
+          const observedShiftTicks = desiredStartTick - candidateStartTicks;
           console.warn(
             `Auphonic consolidated export unit ${i + 1}/${units.length}, attempt ${attempt + 1}: achieved start ${candidateStartTicks} ` +
-              `does not match target ${targetStartTick} (off by ${observedShiftTicks} ticks) -- likely a scratch copy default mismatch. ` +
+              `does not match target ${desiredStartTick} (off by ${observedShiftTicks} ticks) -- likely a scratch copy default mismatch. ` +
               `Discarding this attempt (never using it further) and retrying at a compensated position instead of correcting it in place, ` +
               `to avoid altering its source content.`
           );
@@ -758,7 +587,7 @@
         // this is the only way to see every unit's real position/duration in
         // one place rather than inferring it from the final aggregate.
         console.log(
-          `Auphonic consolidated export unit ${i + 1}/${units.length}: requested insert tick ${targetStartTick}, ` +
+          `Auphonic consolidated export unit ${i + 1}/${units.length}: desired start tick ${desiredStartTick}, ` +
             `achieved [${achievedStartTicks}, ${achievedEndTicks}) -- duration ${achievedEndTicks - achievedStartTicks} ticks ` +
             `(${ppro.TickTime.createWithTicks(String(achievedEndTicks - achievedStartTicks)).seconds.toFixed(3)}s), ` +
             `achievedLeft/Right = ${achievedLeftTicks}/${achievedRightTicks}, next cursor = ${achievedEndTicks}.`
@@ -844,7 +673,6 @@
   window.Auphonic = window.Auphonic || {};
   window.Auphonic.exportModule = {
     exportRangeToFile,
-    exportHandleWidenedRange,
     exportConsolidatedRange,
     getBundledPresetPath,
     BUNDLED_PRESET_RELATIVE_PATH,

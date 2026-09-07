@@ -9,8 +9,8 @@
  * JSON-persistable record from jobModel.js. `live` holds the Premiere object
  * references and per-run settings the pipeline needs that AREN'T already
  * persisted on `job` itself (project/sequence/trackItem/projectItem,
- * trackIndex, startTime/endTime, the preset's display name, the handles
- * plan's tick-level detail, forceNewTrackBelow) -- these never survive a
+ * trackIndex, startTime/endTime, the preset's display name,
+ * forceNewTrackBelow) -- these never survive a
  * restart, so entries loaded back from disk via loadHistory() get
  * `live: null` and are display-only (see the Phase 4a plan for why no
  * auto-resume is attempted: there's no reliable way to reacquire "the same
@@ -87,8 +87,8 @@
   /*
    * unitBundles: one entry per eligible unit from checkSelection, each the
    * same shape as Phase 1-3's single pendingJob object (a spread of
-   * selection.classifyAndValidate's result plus preset/handlesPlan/
-   * forceNewTrackBelow/extraFormats/labelColor). Creates and persists a
+   * selection.classifyAndValidate's result plus preset/forceNewTrackBelow/
+   * extraFormats/labelColor). Creates and persists a
    * jobModel record for each, then queues it in memory for runQueue to pick
    * up. Does not itself start running the queue -- the caller decides that.
    */
@@ -102,10 +102,6 @@
         timelineStartTicks: ticksStringOf(bundle.startTime),
         timelineEndTicks: ticksStringOf(bundle.endTime),
         presetUuid: bundle.preset.uuid,
-        handlesSeconds:
-          bundle.handlesPlan.leftSeconds > 0 || bundle.handlesPlan.rightSeconds > 0
-            ? Math.max(bundle.handlesPlan.leftSeconds, bundle.handlesPlan.rightSeconds)
-            : 0,
         originalSelectionType: bundle.originalSelectionType,
         linkedAudioResolved: bundle.linkedAudioResolved,
         extraFormats: bundle.extraFormats,
@@ -126,7 +122,6 @@
           startTime: bundle.startTime,
           endTime: bundle.endTime,
           presetName: bundle.preset.name,
-          handlesPlan: bundle.handlesPlan,
           forceNewTrackBelow: Boolean(bundle.forceNewTrackBelow),
         },
         cancelRequested: false,
@@ -155,10 +150,6 @@
         timelineStartTicks: ticksStringOf(bundle.startTime),
         timelineEndTicks: ticksStringOf(bundle.endTime),
         presetUuid: bundle.preset.uuid,
-        handlesSeconds:
-          bundle.handlesPlan.leftSeconds > 0 || bundle.handlesPlan.rightSeconds > 0
-            ? Math.max(bundle.handlesPlan.leftSeconds, bundle.handlesPlan.rightSeconds)
-            : 0,
         originalSelectionType: bundle.originalSelectionType,
         linkedAudioResolved: bundle.linkedAudioResolved,
         extraFormats: bundle.extraFormats,
@@ -180,7 +171,6 @@
           startTime: bundle.startTime,
           endTime: bundle.endTime,
           presetName: bundle.preset.name,
-          handlesPlan: bundle.handlesPlan,
           forceNewTrackBelow: Boolean(bundle.forceNewTrackBelow),
         },
         cancelRequested: false,
@@ -283,31 +273,7 @@
       await setStatus("exporting");
       const jobFolder = await paths.getJobFolder(live.project, job.jobId);
       const inputFile = await paths.reserveFile(jobFolder, "input.wav");
-      let placementStartTime = live.startTime;
-      if (live.handlesPlan.leftTicks > 0 || live.handlesPlan.rightTicks > 0) {
-        const handleResult = await exportModule.exportHandleWidenedRange({
-          project: live.project,
-          sequence: live.sequence,
-          trackItem: live.trackItem,
-          projectItem: live.projectItem,
-          leftTicks: live.handlesPlan.leftTicks,
-          rightTicks: live.handlesPlan.rightTicks,
-          outputFile: inputFile,
-        });
-        const achievedLeftSeconds = ppro.TickTime.createWithTicks(String(handleResult.achievedLeftTicks)).seconds;
-        const achievedRightSeconds = ppro.TickTime.createWithTicks(String(handleResult.achievedRightTicks)).seconds;
-        job.handlesActualLeftSeconds = achievedLeftSeconds;
-        job.handlesActualRightSeconds = achievedRightSeconds;
-        job.handlesClampWarnings = live.handlesPlan.clampWarnings;
-        onLog(entry, `Handles: -${achievedLeftSeconds.toFixed(1)}s / +${achievedRightSeconds.toFixed(1)}s`, "dim");
-
-        const originalStartTicks = ticks.ticksNumberOf(live.startTime);
-        placementStartTime = ppro.TickTime.createWithTicks(
-          String(Math.round(originalStartTicks - handleResult.achievedLeftTicks))
-        );
-      } else {
-        await exportModule.exportRangeToFile(live.project, live.sequence, live.startTime, live.endTime, inputFile);
-      }
+      await exportModule.exportRangeToFile(live.project, live.sequence, live.startTime, live.endTime, inputFile);
       job.inputCachePath = inputFile.nativePath;
       onLog(entry, `Exported: ${inputFile.nativePath}`, "ok");
 
@@ -371,7 +337,7 @@
         sequence: live.sequence,
         originalTrackItem: live.trackItem,
         originalTrackIndex: live.trackIndex,
-        startTime: placementStartTime,
+        startTime: live.startTime,
         outputFilePath: outputFile.nativePath,
         originalClipName: job.originalClipName,
         presetName: live.presetName,
@@ -547,11 +513,17 @@
         const exportResult = await exportModule.exportConsolidatedRange({
           project,
           sequence,
+          // leftTicks/rightTicks are always 0 now that handles have been
+          // removed -- exportConsolidatedRange still needs these fields
+          // (widenSideWithBackoff's baseline-reassert-at-zero is what
+          // corrects a reused source file's mismatched scratch-copy
+          // default, unrelated to handles), so they stay explicit rather
+          // than becoming optional.
           units: validEntries.map((e) => ({
             trackItem: e.live.trackItem,
             projectItem: e.live.projectItem,
-            leftTicks: e.live.handlesPlan.leftTicks,
-            rightTicks: e.live.handlesPlan.rightTicks,
+            leftTicks: 0,
+            rightTicks: 0,
           })),
           outputFile: inputFile,
         });
@@ -560,19 +532,12 @@
         for (let i = 0; i < validEntries.length; i++) {
           const entry = validEntries[i];
           const perUnit = exportResult.perUnit[i];
-          const originalStartTicks = ticks.ticksNumberOf(entry.live.startTime);
-          entry.live.placementStartTime = ppro.TickTime.createWithTicks(
-            String(Math.round(originalStartTicks - perUnit.achievedLeftTicks))
-          );
 
           const offsetSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.offsetTicks))).seconds;
           const durationSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.durationTicks))).seconds;
           entry.job.consolidationOffsetMs = Math.round(offsetSeconds * 1000);
           entry.job.consolidationDurationMs = Math.round(durationSeconds * 1000);
           entry.job.inputCachePath = inputFile.nativePath;
-          entry.job.handlesActualLeftSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.achievedLeftTicks))).seconds;
-          entry.job.handlesActualRightSeconds = ppro.TickTime.createWithTicks(String(Math.round(perUnit.achievedRightTicks))).seconds;
-          entry.job.handlesClampWarnings = entry.live.handlesPlan.clampWarnings;
           totalDurationSeconds += durationSeconds;
           await jobModel.saveJob(project, entry.job);
         }
@@ -586,9 +551,10 @@
         // Diagnostic (while the total-vs-actual duration discrepancy is
         // under investigation): measure the LOCAL exported file's own real
         // duration, before a single byte gets uploaded. If this already
-        // disagrees with totalDurationSeconds, the bug is in export.js's own
-        // render/bracket step; if it matches but Auphonic's reported input
-        // length doesn't, the bug is somewhere in the upload path instead.
+        // disagrees with totalDurationSeconds, the bug is in export.js's
+        // own render/bracket step; if it matches but Auphonic's reported
+        // input length doesn't, the bug is somewhere in the upload path
+        // instead.
         try {
           const localExportedSeconds = wav.wavDurationSeconds(await paths.readBinary(inputFile));
           console.log(
@@ -786,7 +752,7 @@
           sequence: entry.live.sequence,
           originalTrackItem: entry.live.trackItem,
           originalTrackIndex: entry.live.trackIndex,
-          startTime: entry.live.placementStartTime,
+          startTime: entry.live.startTime,
           outputFilePath: entry.job.outputCachePath,
           originalClipName: entry.job.originalClipName,
           presetName: entry.live.presetName,

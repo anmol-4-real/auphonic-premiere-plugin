@@ -19,10 +19,6 @@
     return `${m}m ${s}s`;
   }
 
-  /*
-   * durationSeconds should already include handles when handles are enabled
-   * (Phase 2) -- Phase 1 always passes the plain clip duration.
-   */
   function estimate({ durationSeconds, availableCreditsHours }) {
     const billableSeconds = Math.max(durationSeconds, BILLABLE_MINIMUM_SECONDS);
     const billableHours = billableSeconds / 3600;

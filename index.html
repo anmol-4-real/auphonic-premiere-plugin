@@ -24,13 +24,6 @@
   <h2>Process Selected Clip(s)</h2>
   <p class="hint">Select one or more audio clips on your timeline in Premiere, then click below. Selecting a video clip with sound now works too -- its linked audio is used automatically.</p>
 
-  <label class="checkbox-row" for="handlesEnabled">
-    <input type="checkbox" id="handlesEnabled" />
-    Add handles (a little extra audio before and after the clip)
-  </label>
-  <label for="handlesSecondsInput">Handle length (seconds)</label>
-  <input id="handlesSecondsInput" type="number" min="0" step="0.5" value="2.0" />
-
   <p class="hint">Also generate these formats (kept in the "Auphonic Processed Audio" bin, not placed on the timeline):</p>
   <label class="checkbox-row" for="mp3Enabled">
     <input type="checkbox" id="mp3Enabled" />
@@ -105,7 +98,6 @@
 <script src="src/core/auphonicClient.js"></script>
 <script src="src/core/selection.js"></script>
 <script src="src/core/costEstimate.js"></script>
-<script src="src/core/handles.js"></script>
 <script src="src/core/export.js"></script>
 <script src="src/core/insertion.js"></script>
 <script src="src/core/cache.js"></script>

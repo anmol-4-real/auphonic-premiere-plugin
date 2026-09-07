@@ -19,7 +19,6 @@
   const costEstimate = window.Auphonic.costEstimate;
   const insertion = window.Auphonic.insertion;
   const organization = window.Auphonic.organization;
-  const handles = window.Auphonic.handles;
   const jobModel = window.Auphonic.jobModel;
   const queueModule = window.Auphonic.queue;
   const cache = window.Auphonic.cache;
@@ -191,29 +190,6 @@
     return preset ? { uuid: preset.uuid, name: preset.preset_name } : null;
   }
 
-  /* -------------------------------------------------------------- handles */
-
-  function requestedHandleSeconds() {
-    if (!el("handlesEnabled").checked) return 0;
-    const value = parseFloat(el("handlesSecondsInput").value);
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  }
-
-  async function wireHandlesSection() {
-    const settings = await cache.getSettings();
-    el("handlesEnabled").checked = Boolean(settings.handlesEnabled);
-    el("handlesSecondsInput").value = typeof settings.handlesSeconds === "number" ? settings.handlesSeconds : 2.0;
-    el("handlesSecondsInput").disabled = !el("handlesEnabled").checked;
-
-    el("handlesEnabled").addEventListener("change", () => {
-      el("handlesSecondsInput").disabled = !el("handlesEnabled").checked;
-      cache.saveSettings({ handlesEnabled: el("handlesEnabled").checked });
-    });
-    el("handlesSecondsInput").addEventListener("change", () => {
-      cache.saveSettings({ handlesSeconds: parseFloat(el("handlesSecondsInput").value) || 2.0 });
-    });
-  }
-
   /* ---------------------------------------------------- consolidation */
 
   /*
@@ -304,7 +280,6 @@
   async function checkSelection() {
     hide("estimateBox");
     hide("collisionPrompt");
-    state.pendingUnits = [];
     setHtml("selectionStatus", '<span class="dim">Checking...</span>');
     try {
       const result = await selection.resolveQueueCandidates();
@@ -333,26 +308,14 @@
           continue;
         }
 
-        // Handles (PRD 9.6) -- computeHandlePlan returns a no-op plan (plain
-        // clip range, no clamping) when requestedHandleSeconds is 0, so this
-        // always runs and downstream code never needs a separate handles-off
-        // branch.
-        const handlesPlan = await handles.computeHandlePlan({
-          trackItem: unit.trackItem,
-          requestedHandleSeconds: requestedHandleSeconds(),
-        });
-        if (handlesPlan.diagnostics.length > 0) {
-          console.log("Auphonic handles diagnostics:", handlesPlan.diagnostics);
-        }
-
-        // Collision detection (PRD 9.5) -- pre-flight, before any credits are
-        // spent. Checked against the widened range when handles are on.
+        // Collision detection (PRD 9.5) -- pre-flight, before any credits
+        // are spent.
         const targetTrackIndex = unit.trackIndex + 1;
         const collisionItem = await insertion.findCollisionOnAudioTrack(
           result.sequence,
           targetTrackIndex,
-          handlesPlan.widenedStartTime,
-          handlesPlan.widenedEndTime
+          unit.startTime,
+          unit.endTime
         );
 
         let forceNewTrackBelow = false;
@@ -389,12 +352,25 @@
           project: result.project,
           sequence: result.sequence,
           preset,
-          handlesPlan,
           forceNewTrackBelow,
           extraFormats: selectedExtraFormats(),
           labelColor: selectedLabelColor(),
         });
       }
+
+      /*
+       * Phase 4c: this briefly merged into whatever was already staged
+       * (deduped by source range) instead of replacing it, specifically to
+       * support "check a handles-on group, then a handles-off group, then
+       * confirm both together." Now that the handles feature has been
+       * removed entirely, that's no longer a real workflow -- and the merge
+       * became a live bug in its own right: leftover units from an earlier,
+       * unrelated "Check Selected Clip(s)" click silently piled up alongside
+       * a later, unrelated selection (confirmed live: checking 3 clips
+       * showed 5 staged). Each check now reflects exactly the current
+       * selection again, matching every phase before Phase 4c.
+       */
+      state.pendingUnits = readyBundles;
 
       let credits = null;
       try {
@@ -404,7 +380,7 @@
         // Non-fatal -- estimate can still show without a fresh credit check.
       }
 
-      if (readyBundles.length === 0) {
+      if (state.pendingUnits.length === 0) {
         setHtml(
           "selectionStatus",
           skipLines.length > 0
@@ -414,23 +390,21 @@
         return;
       }
 
-      let totalDuration = 0;
-      const allWarnings = [];
-      readyBundles.forEach((bundle) => {
-        totalDuration += bundle.handlesPlan.widenedDurationSeconds;
-        bundle.handlesPlan.clampWarnings.forEach((w) => allWarnings.push(`${bundle.clipName}: ${w}`));
-      });
-
-      state.pendingUnits = readyBundles;
       // Consolidation only means anything for 2+ clips -- inert (falls back
       // to Phase 4a's per-clip-summed estimate/production below) otherwise.
-      state.consolidating = consolidateRequested() && readyBundles.length >= 2;
+      state.consolidating = consolidateRequested() && state.pendingUnits.length >= 2;
 
-      const readyNames = readyBundles.map((b) =>
+      let totalDuration = 0;
+      const allWarnings = [];
+      state.pendingUnits.forEach((bundle) => {
+        totalDuration += bundle.durationSeconds;
+      });
+
+      const readyNames = state.pendingUnits.map((b) =>
         b.originalSelectionType === "video" ? `${b.clipName} (video clip -- using linked audio)` : b.clipName
       );
       const statusLines = [
-        `<span class="ok">${readyBundles.length} clip(s) ready${state.consolidating ? " (consolidating into one production)" : ""}: ${readyNames.join(", ")}</span>`,
+        `<span class="ok">${state.pendingUnits.length} clip(s) ready${state.consolidating ? " (consolidating into one production)" : ""}: ${readyNames.join(", ")}</span>`,
       ];
       if (skipLines.length > 0) statusLines.push(`<span class="bad">${skipLines.join("<br/>")}</span>`);
       setHtml("selectionStatus", statusLines.join("<br/>"));
@@ -443,16 +417,16 @@
         est.warnings.forEach((w) => allWarnings.push(w));
         setHtml(
           "estimateText",
-          `Clips ready: ${readyBundles.length}, consolidated into one production<br/>` +
+          `Clips ready: ${state.pendingUnits.length}, consolidated into one production<br/>` +
             `Total actual duration: ${costEstimate.formatDuration(totalDuration)}<br/>` +
             `Estimated billable time: ${costEstimate.formatDuration(est.billableSeconds)}` +
             (credits !== null ? `<br/>Available credits: ${credits} h` : "")
         );
       } else {
         let totalBillable = 0;
-        readyBundles.forEach((bundle) => {
+        state.pendingUnits.forEach((bundle) => {
           const est = costEstimate.estimate({
-            durationSeconds: bundle.handlesPlan.widenedDurationSeconds,
+            durationSeconds: bundle.durationSeconds,
             availableCreditsHours: credits,
           });
           bundle.estimate = est;
@@ -461,7 +435,7 @@
         });
         setHtml(
           "estimateText",
-          `Clips ready: ${readyBundles.length}<br/>` +
+          `Clips ready: ${state.pendingUnits.length}<br/>` +
             `Total actual duration: ${costEstimate.formatDuration(totalDuration)}<br/>` +
             `Total estimated billable time: ${costEstimate.formatDuration(totalBillable)}` +
             (credits !== null ? `<br/>Available credits: ${credits} h` : "")
@@ -597,7 +571,6 @@
   }
 
   async function wireProcessSection() {
-    await wireHandlesSection();
     await wireExtraFormatsSection();
     await wireConsolidateSection();
     el("checkSelectionBtn").addEventListener("click", checkSelection);
