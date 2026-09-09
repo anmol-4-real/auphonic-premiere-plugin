@@ -15,7 +15,7 @@
 (function () {
   const ppro = require("premierepro");
 
-  const DEFAULT_BIN_NAME = "Auphonic Processed Audio";
+  const DEFAULT_BIN_NAME = "Awwphonic Processed Audio";
 
   /* Read live instead of hardcoding the reference sample's 15 names
    * (VIOLET, BLUE, GREEN, ...) -- that list was observed on the sample's

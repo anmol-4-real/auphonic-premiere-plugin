@@ -1,85 +1,491 @@
+/*
+ * Satoshi Regular, bundled locally (no CDN access in this UXP host). Font
+ * file not supplied yet as of Phase 5 -- see HANDOFF.md's Phase 5 scope --
+ * so this silently falls back to the system stack below until it is.
+ */
+@font-face {
+  font-family: "Satoshi";
+  src: url("../../assets/fonts/Satoshi-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+}
+
+:root {
+  --bg-page: #1c1c1e;
+  --bg-card: #242426;
+  --bg-card-raised: #2a2a2c;
+  --border-card: rgba(255, 255, 255, 0.09);
+  --text-primary: #f0f0f0;
+  --text-secondary: #9a9a9a;
+  --accent: #aef96c;
+  --accent-ink: #14150f;
+  --ok: #4caf7d;
+  --bad: #ec5b56;
+  --warn: #e8b339;
+  --dim: #8a8a8a;
+  --input-bg: #1a1a1b;
+  --input-border: #48484b;
+}
+
+/*
+ * NOTE on this file's CSS choices: this UXP panel's embedded webview does
+ * not reliably render flexbox `gap` (confirmed live -- a status dot and its
+ * label rendered with zero space between them everywhere `gap` was used
+ * for that spacing) or the `inset` shorthand (confirmed live -- the toggle
+ * switch's track/pill never painted at all, only its thumb, because an
+ * absolutely-positioned element sized purely by `inset: 0` collapsed to
+ * nothing). A plain `<hr>`'s default border rendering also ignored our color
+ * override and painted solid white (confirmed live). Every rule below spaces
+ * flex children with explicit margins instead of `gap`, every absolutely-
+ * positioned box uses explicit top/right/bottom/left instead of `inset`, and
+ * dividers are a background-color bar on a plain `div` instead of an `<hr>`.
+ * Don't reintroduce any of these without re-confirming it actually paints in
+ * this host.
+ */
+
 html, body {
   height: 100%;
   overflow-y: auto;
 }
 body {
-  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-family: "Satoshi", -apple-system, "Segoe UI", sans-serif;
   font-size: 12px;
-  color: #e8e8e8;
-  background: #262626;
+  color: var(--text-primary);
+  background: var(--bg-page);
   margin: 0;
   padding: 12px;
   box-sizing: border-box;
+  position: relative;
+  min-height: 100%;
 }
-h2 {
-  font-size: 13px;
-  margin: 0 0 4px;
-  color: #fff;
+
+.app-header {
+  padding: 2px 2px 12px;
 }
-section.panel-block {
-  border: 1px solid #3d3d3d;
-  border-radius: 4px;
-  padding: 10px;
+.wordmark {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.panel-main > * {
   margin-bottom: 12px;
-  background: #2e2e2e;
 }
-p.hint {
-  color: #9a9a9a;
-  font-size: 11px;
+.panel-main > *:last-child {
+  margin-bottom: 0;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  padding: 16px;
+}
+.card-label {
+  font-size: 13px;
+  color: var(--text-primary);
   margin: 0 0 8px;
-  line-height: 1.45;
 }
+.section-label {
+  font-size: 13px;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+  padding: 0 2px;
+}
+.subgroup-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 0 0 8px;
+}
+/* A background-color bar, not a border -- this webview's default <hr>
+   border rendering ignored our color override and painted solid white
+   (confirmed live), so this avoids `border` on a divider entirely. */
+.settings-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 14px 0;
+}
+
+p.hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+
 label {
   display: block;
-  margin: 8px 0 3px;
-  font-size: 11px;
-  color: #c4c4c4;
+  margin: 8px 0 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
+
 input, select {
   width: 100%;
   box-sizing: border-box;
-  background: #1d1d1d;
-  color: #e8e8e8;
-  border: 1px solid #4a4a4a;
-  border-radius: 3px;
-  padding: 5px 6px;
-  font-size: 11px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-family: inherit;
 }
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/*
+ * Custom dropdown for label color -- a native <select>'s <option> list
+ * ignored every inline color we set on it (confirmed live: bullets and
+ * names all rendered plain white regardless of style.color), so the swatch
+ * itself has to be a real styled element instead of relying on <option>
+ * rendering at all.
+ */
+.color-select {
+  position: relative;
+}
+.color-select-button {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  margin: 0;
+  display: flex;
+  align-items: center;
+}
+.color-select-button:hover {
+  opacity: 1;
+}
+.color-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 8px;
+  box-sizing: border-box;
+}
+.color-select-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-card-raised);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  padding: 4px;
+  box-sizing: border-box;
+  z-index: 20;
+}
+.color-select-option {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.color-select-option:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
 button {
   margin-top: 10px;
-  margin-right: 6px;
-  background: #2680eb;
-  color: #fff;
+  margin-right: 8px;
   border: none;
-  border-radius: 3px;
-  padding: 7px 14px;
+  border-radius: 6px;
+  padding: 8px 16px;
   font-size: 12px;
+  font-family: inherit;
   cursor: pointer;
+  transition: opacity 0.1s ease;
 }
-button.secondary {
-  background: #4a4a4a;
+button:hover:not(:disabled) {
+  opacity: 0.88;
 }
-button:disabled {
-  background: #4a4a4a;
-  color: #8a8a8a;
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 400;
+}
+.btn-primary:disabled {
+  background: var(--input-border);
+  color: var(--dim);
   cursor: default;
 }
+.btn-secondary {
+  background: #38383a;
+  color: var(--text-primary);
+}
+.btn-secondary:disabled {
+  background: #303032;
+  color: var(--dim);
+  cursor: default;
+}
+.link-btn {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  font-size: 12px;
+}
+.link-btn:hover {
+  color: var(--text-primary);
+  opacity: 1;
+}
+
 .status-line {
   margin-top: 8px;
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
 }
 .warning-list {
   margin: 8px 0;
   padding-left: 18px;
-  font-size: 11px;
-  color: #e8b339;
+  font-size: 12px;
+  color: var(--warn);
 }
-.log {
+.ok   { color: var(--ok); }
+.bad  { color: var(--bad); }
+.warn { color: var(--warn); }
+.dim  { color: var(--dim); }
+.hidden { display: none; }
+
+/* --------------------------------------------------------------- Connect */
+
+.connected-line {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.connected-line > * {
+  margin-left: 10px;
+}
+.connected-line > *:first-child {
+  margin-left: 0;
+}
+
+/* --------------------------------------------------------------- toggles */
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.toggle-row:last-child {
+  margin-bottom: 0;
+}
+.checkbox {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+.checkbox input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.checkbox-box {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  box-sizing: border-box;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 10px;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+/*
+ * A checkmark drawn as an actual SVG image rather than a rotated-border
+ * pseudo-element -- the border-trick version rendered as a stray glyph
+ * instead of a check in this webview (confirmed live), so this uses a
+ * pixel-defined image instead of relying on this host's border/transform
+ * rendering for something this small.
+ */
+.checkbox input:checked + .checkbox-box {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5L6.5 11.5L12.5 4.5' fill='none' stroke='%2314150f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* ------------------------------------------------------------ collision */
+
+.inline-alert {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: rgba(232, 179, 57, 0.1);
+}
+
+/* ---------------------------------------------------------- Your Clips */
+
+.clip-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+}
+.clip-card-row {
+  display: flex;
+  align-items: center;
+}
+.clip-card-row > * {
+  margin-left: 10px;
+}
+.clip-card-row > *:first-child {
+  margin-left: 0;
+}
+.clip-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+.clip-status-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.clip-card-note {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.clip-card-actions {
+  display: flex;
+  margin-top: 8px;
+}
+.clip-card-actions button {
+  margin: 0;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  margin-left: 6px;
+}
+.clip-card-actions button:first-child {
+  margin-left: 0;
+}
+.clip-card-details {
+  margin-top: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--dim);
+}
+.status-dot.dot-done { background: var(--accent); }
+.status-dot.dot-bad { background: var(--bad); }
+.status-dot.dot-warn { background: var(--warn); }
+.status-dot.dot-dim { background: var(--dim); }
+
+/* Phase 4b/4c: cue for cards sharing one consolidated batch, carried over
+   from the old table's batch-row rule -- a left accent border plus, since
+   that alone read as too subtle, a small "Batch" tag next to the name. */
+.clip-card.batch-member {
+  border-left: 3px solid var(--accent);
+  background: var(--bg-card-raised);
+}
+
+/* --------------------------------------------------------- disclosures */
+
+.disclosure-toggle {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.disclosure-toggle .chevron {
+  margin-right: 6px;
+}
+.disclosure-toggle:hover {
+  color: var(--text-primary);
+  opacity: 1;
+}
+.disclosure-toggle .chevron {
+  transition: transform 0.15s ease;
+}
+.disclosure-toggle[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+.disclosure-toggle.small {
+  font-size: 11px;
+}
+
+.advanced-section {
+  margin-top: 4px;
+  padding: 4px 2px;
+}
+.advanced-section #advancedPanel {
   margin-top: 10px;
+}
+.advanced-section button {
+  padding: 6px 12px;
+  font-size: 11.5px;
+}
+
+.footer-line {
+  margin-top: 4px;
+  padding: 4px 2px;
+  text-align: center;
+}
+.footer-line .link-btn {
+  font-size: 11px;
+}
+
+.log {
+  margin-top: 8px;
   padding: 8px;
-  background: #1a1a1a;
-  border-radius: 3px;
+  background: var(--input-bg);
+  border-radius: 6px;
   font-family: Menlo, Consolas, monospace;
   font-size: 10.5px;
   line-height: 1.5;
@@ -89,63 +495,19 @@ button:disabled {
   max-height: 220px;
   overflow-y: auto;
 }
-.ok   { color: #4caf7d; }
-.bad  { color: #ec5b56; }
-.warn { color: #e8b339; }
-.dim  { color: #8a8a8a; }
-.hidden { display: none; }
 
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px 0 3px;
-  font-size: 11px;
-  color: #c4c4c4;
-  cursor: pointer;
-}
-.checkbox-row input {
-  width: auto;
-  margin: 0;
-}
-#collisionPrompt {
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid #e8b339;
-  border-radius: 3px;
-  background: #33301f;
-}
+/* --------------------------------------------------------------- watermark */
 
-.queue-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-}
-.queue-table th {
-  text-align: left;
-  color: #9a9a9a;
-  font-weight: normal;
-  padding: 4px 6px;
-  border-bottom: 1px solid #3d3d3d;
-}
-.queue-table td {
-  padding: 6px 6px;
-  border-bottom: 1px solid #3d3d3d;
-  vertical-align: top;
-}
-.queue-row-detail {
-  margin-top: 3px;
-  font-size: 10.5px;
-  line-height: 1.4;
-}
-.queue-actions button {
-  margin-top: 0;
-  margin-right: 4px;
-  padding: 4px 8px;
-  font-size: 10.5px;
-}
-/* Phase 4b: minimal visual cue for rows sharing one consolidated batch --
-   reuses the existing button-accent blue rather than a new color. */
-.batch-row td:first-child {
-  border-left: 3px solid #2680eb;
+.watermark {
+  position: fixed;
+  right: 10px;
+  bottom: 8px;
+  width: 64px;
+  height: 24px;
+  opacity: 0.2;
+  pointer-events: none;
+  background-image: url("../../assets/hackerrank-mark.svg");
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  background-size: contain;
 }

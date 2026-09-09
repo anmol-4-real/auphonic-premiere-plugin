@@ -9,6 +9,11 @@
  * lib/secureStorage.js for why. Depends on every window.Auphonic.* module,
  * all of which must be loaded first (see index.html's script order).
  * Published on window.Auphonic.panel.
+ *
+ * Phase 5: this file's own calls into every core module are unchanged from
+ * Phase 4c -- same functions, same arguments, same order. Only what happens
+ * with their return values on the DOM side changed (card-based markup
+ * instead of flat sections, a per-clip card list instead of a queue table).
  */
 (function () {
   const ppro = require("premierepro");
@@ -24,11 +29,30 @@
   const cache = window.Auphonic.cache;
   const { AuphonicPluginError } = window.Auphonic.errors;
 
+  // Kept in sync with manifest.json's own "version" by hand -- bump both
+  // together on every release (see RELEASING.md). Only used to stamp the
+  // "Report a Bug" email below; nothing reads the manifest file at runtime.
+  const PLUGIN_VERSION = "1.0.0";
+  const BUG_REPORT_EMAIL = "anmolpreet@hackerrank.com";
+
   const state = {
     apiKey: null,
     presets: [],
     pendingUnits: [],
     consolidating: false,
+    // Phase 5: per-clip log lines and "Show details" open state, keyed by
+    // jobId -- the clip list re-renders on every status change, so this is
+    // what lets accumulated log lines and an open details panel survive
+    // that re-render instead of being wiped each time.
+    clipLogs: {},
+    expandedClips: {},
+    // Phase 5 (round 2): "current run" now means exactly one thing -- the
+    // batch of jobIds created by the most recent Confirm & Process click
+    // (see wireProcessSection below), plus anything the user just retried.
+    // Everything else, live or not, renders in the Past Productions
+    // disclosure instead of "Your Clips" -- see isCurrentRunEntry.
+    currentBatchJobIds: new Set(),
+    labelColor: "none",
   };
 
   /*
@@ -82,24 +106,33 @@
     el(id).classList.add("hidden");
   }
 
-  function appendLog(targetId, message, cls) {
-    const container = el(targetId);
-    const line = document.createElement("div");
-    if (cls) line.className = cls;
-    line.textContent = message;
-    container.appendChild(line);
-    container.scrollTop = container.scrollHeight;
-  }
-
-  function clearLog(targetId) {
-    el(targetId).textContent = "";
-  }
-
+  /*
+   * Phase 5: dropped the raw err.category prefix from the default-visible
+   * line (e.g. just "Enter an API key first." instead of "Premiere
+   * selection error: ..."). For a failed clip in the "Your Clips" list, the
+   * category is still shown -- inside that card's "Show details" panel,
+   * see renderClipCard below -- rather than on the default line.
+   */
   function describeError(err) {
-    if (err instanceof AuphonicPluginError) {
-      return `${err.category}: ${err.message}`;
-    }
     return err && err.message ? err.message : String(err);
+  }
+
+  // Auphonic's own credits figure comes back with long floating-point
+  // precision (e.g. 15.509233333333256) -- purely a display rounding, the
+  // real value passed to any cost/estimate math elsewhere is untouched.
+  function formatCredits(hours) {
+    return Number(hours).toFixed(1);
+  }
+
+  // Phase 5: the default-visible line for a failed clip now shows a short
+  // excerpt rather than job.errorMessage in full -- the full text still
+  // shows, unabridged, inside that clip's "Show details" panel.
+  function shortErrorSummary(message) {
+    if (!message) return "";
+    const cutoff = message.indexOf(". ");
+    if (cutoff > -1 && cutoff < 100) return message.slice(0, cutoff + 1);
+    if (message.length <= 100) return message;
+    return `${message.slice(0, 100).trim()}...`;
   }
 
   /* ------------------------------------------------------------ account/key */
@@ -110,17 +143,13 @@
       const user = await auphonicClient.getUser(apiKey);
       state.apiKey = apiKey;
       if (persist) await secureStorage.saveApiKey(apiKey);
-      setHtml(
-        "keyStatus",
-        `<span class="ok">Connected as ${user.username}. Credits: ${user.credits} h</span>`
-      );
       el("apiKeyInput").value = "";
-      hide("apiKeyInput");
-      hide("saveKeyBtn");
-      show("changeKeyBtn");
-      show("presetSection");
-      show("processSection");
-      show("cacheSection");
+      setHtml("connectedSummary", `Connected &middot; ${formatCredits(user.credits)}h credits`);
+      hide("connectExpanded");
+      show("connectCollapsed");
+      show("settingsCard");
+      show("actionCard");
+      show("advancedSection");
       await loadPresets();
       return true;
     } catch (err) {
@@ -140,11 +169,10 @@
     });
 
     el("changeKeyBtn").addEventListener("click", () => {
-      show("apiKeyInput");
-      show("saveKeyBtn");
-      hide("changeKeyBtn");
+      hide("connectCollapsed");
+      show("connectExpanded");
       el("apiKeyInput").value = "";
-      setHtml("keyStatus", '<span class="dim">Paste a new key and click Save Key &amp; Connect.</span>');
+      setHtml("keyStatus", '<span class="dim">Paste a new key and click Connect.</span>');
     });
   }
 
@@ -211,34 +239,103 @@
 
   /* -------------------------------------------------------- label color */
 
-  function populateLabelColorOptions() {
-    const select = el("labelColorSelect");
-    select.innerHTML = "";
-    const noneOption = document.createElement("option");
-    noneOption.value = "none";
-    noneOption.textContent = "None";
-    select.appendChild(noneOption);
-    organization.listColorLabelNames().forEach((name) => {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name.charAt(0) + name.slice(1).toLowerCase();
-      select.appendChild(option);
+  /*
+   * Approximate swatch hues for Premiere's named label colors, keyed by the
+   * same uppercase enum keys organization.listColorLabelNames() returns.
+   * ppro.Constants.ProjectItemColorLabel only exposes an enum for SETTING a
+   * label -- it has no getter for the actual RGB Premiere paints on screen
+   * for each name, and there's no live way to read that back. These hex
+   * values are a by-eye approximation (violet=purple, forest=dark green,
+   * etc.), not sampled from Premiere itself -- if any look visibly wrong
+   * next to Premiere's own Label Colors preferences, they're safe to adjust
+   * here without touching anything else.
+   */
+  const LABEL_COLOR_HEX = {
+    VIOLET: "#b166e0",
+    IRIS: "#6a5fc4",
+    LAVENDER: "#c9b8ea",
+    CERULEAN: "#4fa3e0",
+    FOREST: "#3f8f4f",
+    ROSE: "#e0708a",
+    MANGO: "#eba13c",
+    PURPLE: "#9a4fcf",
+    BLUE: "#4a72e0",
+    TEAL: "#3fa89e",
+    MAGENTA: "#d43fae",
+    TAN: "#c9a876",
+    GREEN: "#5cbf5c",
+    BROWN: "#8a5a3c",
+    YELLOW: "#e0cf3f",
+  };
+
+  function labelColorNames() {
+    return ["none", ...organization.listColorLabelNames()];
+  }
+
+  function labelColorDisplayName(value) {
+    if (!value || value === "none") return "None";
+    return value.charAt(0) + value.slice(1).toLowerCase();
+  }
+
+  function paintSwatch(swatchEl, value) {
+    const hex = LABEL_COLOR_HEX[value];
+    if (hex) {
+      swatchEl.style.background = hex;
+      swatchEl.style.border = "none";
+    } else {
+      swatchEl.style.background = "transparent";
+      swatchEl.style.border = "1px solid var(--input-border)";
+    }
+  }
+
+  function setColorSelectButton(value) {
+    paintSwatch(el("labelColorSwatch"), value);
+    el("labelColorButtonText").textContent = labelColorDisplayName(value);
+  }
+
+  function selectLabelColor(value) {
+    state.labelColor = value;
+    setColorSelectButton(value);
+    hide("labelColorList");
+    cache.saveSettings({ labelColor: value });
+  }
+
+  function buildColorOptionsList() {
+    const list = el("labelColorList");
+    list.innerHTML = "";
+    labelColorNames().forEach((name) => {
+      const row = document.createElement("div");
+      row.className = "color-select-option";
+      const swatch = document.createElement("span");
+      swatch.className = "color-swatch";
+      paintSwatch(swatch, name);
+      row.appendChild(swatch);
+      const label = document.createElement("span");
+      label.textContent = labelColorDisplayName(name);
+      row.appendChild(label);
+      row.addEventListener("click", () => selectLabelColor(name));
+      list.appendChild(row);
     });
   }
 
   async function wireLabelColorSection() {
-    populateLabelColorOptions();
-    const select = el("labelColorSelect");
+    buildColorOptionsList();
     const settings = await cache.getSettings();
-    const isValid = settings.labelColor && Array.from(select.options).some((o) => o.value === settings.labelColor);
-    select.value = isValid ? settings.labelColor : "none";
-    select.addEventListener("change", () => {
-      cache.saveSettings({ labelColor: select.value });
+    const isValid = settings.labelColor && labelColorNames().includes(settings.labelColor);
+    state.labelColor = isValid ? settings.labelColor : "none";
+    setColorSelectButton(state.labelColor);
+
+    el("labelColorButton").addEventListener("click", (event) => {
+      event.stopPropagation();
+      el("labelColorList").classList.toggle("hidden");
+    });
+    document.addEventListener("click", (event) => {
+      if (!el("labelColorSelect").contains(event.target)) hide("labelColorList");
     });
   }
 
   function selectedLabelColor() {
-    return el("labelColorSelect").value || "none";
+    return state.labelColor || "none";
   }
 
   /* ---------------------------------------------------------- formats */
@@ -340,7 +437,7 @@
               },
               "Destination track already had media at this time; user chose not to create a new track."
             );
-            renderQueueTable();
+            renderClipsList();
             skipLines.push(`Canceled: ${unit.clipName} - destination track collision declined. No credits were spent.`);
             continue;
           }
@@ -461,113 +558,245 @@
 
   /* ------------------------------------------------------------------ queue */
 
+  /*
+   * Phase 5: log lines used to print straight into one always-visible,
+   * console-style box. Now every job's own lines are buffered here (keyed
+   * by jobId) so they survive the clip list's own re-renders, and are only
+   * shown inside that clip's "Show details" panel -- collapsed by default,
+   * same underlying content onLog has always produced.
+   */
   function queueHooks() {
     return {
-      onStatus: (entry) => {
-        const label = jobModel.STATUS_LABELS[entry.job.status] || entry.job.status;
-        setHtml("progressStatus", `<span class="dim">${entry.job.originalClipName} -- ${label}</span>`);
-        renderQueueTable();
+      onStatus: () => renderClipsList(),
+      onLog: (entry, message, cls) => {
+        const jobId = entry.job.jobId;
+        if (!state.clipLogs[jobId]) state.clipLogs[jobId] = [];
+        state.clipLogs[jobId].push({ message, cls });
+        appendLiveLogLine(jobId, message, cls);
       },
-      onLog: (entry, message, cls) => appendLog("progressLog", `[${entry.job.originalClipName}] ${message}`, cls),
     };
   }
 
-  function statusBadgeClass(status) {
-    if (status === "inserted") return "ok";
-    if (status === "failed") return "bad";
-    if (status === "canceled") return "dim";
-    return "warn";
+  // Fast path: if this clip's details panel is already in the DOM, append
+  // the new line directly instead of waiting for the next full re-render
+  // (which only happens on status changes, not on every log line -- upload
+  // progress alone can log many lines per job).
+  function appendLiveLogLine(jobId, message, cls) {
+    const container = document.getElementById(`clipLog-${jobId}`);
+    if (!container) return;
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = message;
+    container.appendChild(line);
+    container.scrollTop = container.scrollHeight;
   }
 
-  function renderQueueTable() {
-    const entries = queueModule.getEntries();
-    const tbody = el("queueTableBody");
-    tbody.innerHTML = "";
+  function statusDotClass(status) {
+    if (status === "inserted") return "dot-done";
+    if (status === "failed") return "dot-bad";
+    if (status === "canceled") return "dot-dim";
+    return "dot-warn";
+  }
 
-    if (entries.length === 0) {
-      hide("queueSection");
-      return;
+  /*
+   * Phase 5 (round 2): "current run" is exactly the batch of jobIds from
+   * the most recent Confirm & Process click (state.currentBatchJobIds,
+   * populated below in wireProcessSection's confirm handler, and extended
+   * whenever the user retries an older job from Past Productions).
+   * Everything else -- including a job that's still `live` from an earlier
+   * click this same session -- renders in Past Productions instead, so
+   * repeated testing/use doesn't pile jobs up in "Your Clips" forever.
+   * queueModule.loadHistory() itself is untouched; this is purely which of
+   * its loaded entries render in which of the two lists.
+   */
+  function isCurrentRunEntry(entry) {
+    return state.currentBatchJobIds.has(entry.job.jobId);
+  }
+
+  function buildClipCard(entry) {
+    const { job, live } = entry;
+    const jobId = job.jobId;
+
+    const card = document.createElement("div");
+    card.className = "clip-card";
+    if (job.batchId) card.classList.add("batch-member");
+
+    const row = document.createElement("div");
+    row.className = "clip-card-row";
+
+    const dot = document.createElement("span");
+    dot.className = `status-dot ${statusDotClass(job.status)}`;
+    row.appendChild(dot);
+
+    const name = document.createElement("span");
+    name.className = "clip-name";
+    name.textContent = job.originalClipName;
+    row.appendChild(name);
+
+    if (job.batchId) {
+      const batchTag = document.createElement("span");
+      batchTag.className = "batch-tag";
+      batchTag.textContent = "Batch";
+      row.appendChild(batchTag);
     }
-    show("queueSection");
 
-    entries.forEach((entry) => {
-      const { job, live } = entry;
-      const row = document.createElement("tr");
-      if (job.batchId) row.classList.add("batch-row");
+    const statusLabel = document.createElement("span");
+    statusLabel.className = "clip-status-label";
+    statusLabel.textContent = jobModel.STATUS_LABELS[job.status] || job.status;
+    row.appendChild(statusLabel);
 
-      const nameCell = document.createElement("td");
-      nameCell.textContent = job.originalClipName;
-      row.appendChild(nameCell);
+    card.appendChild(row);
 
-      const statusCell = document.createElement("td");
-      const statusSpan = document.createElement("span");
-      statusSpan.className = statusBadgeClass(job.status);
-      statusSpan.textContent = jobModel.STATUS_LABELS[job.status] || job.status;
-      statusCell.appendChild(statusSpan);
+    if (job.status === "failed" && job.errorMessage) {
+      const detail = document.createElement("div");
+      detail.className = "bad clip-card-note";
+      detail.textContent = shortErrorSummary(job.errorMessage);
+      card.appendChild(detail);
+    }
+    if (!live && job.productionId && !["inserted", "failed", "canceled"].includes(job.status)) {
+      const warning = document.createElement("div");
+      warning.className = "warn clip-card-note";
+      warning.textContent =
+        "This clip may already have an Auphonic production in progress -- check auphonic.com before reprocessing it.";
+      card.appendChild(warning);
+    }
+
+    // "Show details" -- collapsed by default, reveals the exact same
+    // technical log lines onLog has always produced (plus, for a failed
+    // job, the error category that used to prefix the default-visible line).
+    const hasDetails = (state.clipLogs[jobId] && state.clipLogs[jobId].length > 0) || job.status === "failed";
+    if (hasDetails) {
+      const isExpanded = Boolean(state.expandedClips[jobId]);
+      const toggle = document.createElement("button");
+      toggle.className = "disclosure-toggle small";
+      toggle.setAttribute("aria-expanded", String(isExpanded));
+      toggle.innerHTML =
+        '<svg class="chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
+        (isExpanded ? "Hide details" : "Show details");
+      const details = document.createElement("div");
+      details.className = "clip-card-details" + (isExpanded ? "" : " hidden");
+      const log = document.createElement("div");
+      log.className = "log";
+      log.id = `clipLog-${jobId}`;
       if (job.status === "failed" && job.errorMessage) {
-        const detail = document.createElement("div");
-        detail.className = "dim queue-row-detail";
-        detail.textContent = job.errorMessage;
-        statusCell.appendChild(detail);
+        const fullLine = document.createElement("div");
+        fullLine.className = "bad";
+        fullLine.textContent = job.errorCategory
+          ? `${job.errorCategory}: ${job.errorMessage}`
+          : job.errorMessage;
+        log.appendChild(fullLine);
       }
-      if (!live && job.productionId && !["inserted", "failed", "canceled"].includes(job.status)) {
-        const warning = document.createElement("div");
-        warning.className = "warn queue-row-detail";
-        warning.textContent =
-          "This clip may already have an Auphonic production in progress -- check auphonic.com before reprocessing it.";
-        statusCell.appendChild(warning);
-      }
-      row.appendChild(statusCell);
+      (state.clipLogs[jobId] || []).forEach(({ message, cls }) => {
+        const line = document.createElement("div");
+        if (cls) line.className = cls;
+        line.textContent = message;
+        log.appendChild(line);
+      });
+      details.appendChild(log);
+      toggle.addEventListener("click", () => {
+        const nowExpanded = !state.expandedClips[jobId];
+        state.expandedClips[jobId] = nowExpanded;
+        toggle.setAttribute("aria-expanded", String(nowExpanded));
+        toggle.innerHTML =
+          '<svg class="chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
+          (nowExpanded ? "Hide details" : "Show details");
+        details.classList.toggle("hidden", !nowExpanded);
+      });
+      card.appendChild(toggle);
+      card.appendChild(details);
+    }
 
-      const actionsCell = document.createElement("td");
-      actionsCell.className = "queue-actions";
+    const actions = document.createElement("div");
+    actions.className = "clip-card-actions";
 
-      if (live && queueModule.CANCELABLE_STATUSES.includes(job.status)) {
-        const cancelBtn = document.createElement("button");
-        cancelBtn.className = "secondary";
-        cancelBtn.textContent = "Cancel";
-        cancelBtn.onclick = async () => {
-          await queueModule.cancelJob(entry);
-          renderQueueTable();
-        };
-        actionsCell.appendChild(cancelBtn);
-      }
+    if (live && queueModule.CANCELABLE_STATUSES.includes(job.status)) {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn-secondary";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.onclick = async () => {
+        await queueModule.cancelJob(entry);
+        renderClipsList();
+      };
+      actions.appendChild(cancelBtn);
+    }
 
-      if (live && job.status === "failed") {
-        const retryBtn = document.createElement("button");
-        retryBtn.className = "secondary";
-        retryBtn.textContent = "Retry";
-        retryBtn.onclick = async () => {
-          retryBtn.disabled = true;
-          await queueModule.retryJob(entry, state.apiKey, queueHooks());
-          renderQueueTable();
-        };
-        actionsCell.appendChild(retryBtn);
-      }
+    if (live && job.status === "failed") {
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "btn-secondary";
+      retryBtn.textContent = "Retry";
+      retryBtn.onclick = async () => {
+        retryBtn.disabled = true;
+        // Retrying (even from Past Productions) makes it "current" again --
+        // and if it's a consolidated batch member whose shared work never
+        // completed, retryJob resets every failed sibling too, so promote
+        // the whole batch, not just the card that was clicked.
+        queueModule
+          .getEntries()
+          .filter((e) => (job.batchId ? e.job.batchId === job.batchId : e.job.jobId === job.jobId))
+          .forEach((e) => state.currentBatchJobIds.add(e.job.jobId));
+        await queueModule.retryJob(entry, state.apiKey, queueHooks());
+        renderClipsList();
+      };
+      actions.appendChild(retryBtn);
+    }
 
-      if (job.productionId) {
-        const openBtn = document.createElement("button");
-        openBtn.className = "secondary";
-        openBtn.textContent = "Open in Auphonic";
-        openBtn.onclick = () => uxp.shell.openExternal(buildProductionUrl(job.productionId));
-        actionsCell.appendChild(openBtn);
-      }
+    if (job.productionId) {
+      const openBtn = document.createElement("button");
+      openBtn.className = "btn-secondary";
+      openBtn.textContent = "Open in Auphonic";
+      openBtn.onclick = () => uxp.shell.openExternal(buildProductionUrl(job.productionId));
+      actions.appendChild(openBtn);
+    }
 
-      if (!live && !["inserted", "failed", "canceled"].includes(job.status)) {
-        const dismissBtn = document.createElement("button");
-        dismissBtn.className = "secondary";
-        dismissBtn.textContent = "Dismiss";
-        dismissBtn.onclick = async () => {
-          const project = await ppro.Project.getActiveProject();
-          await queueModule.dismissHistoryEntry(project, entry);
-          renderQueueTable();
-        };
-        actionsCell.appendChild(dismissBtn);
-      }
+    if (!live && !["inserted", "failed", "canceled"].includes(job.status)) {
+      const dismissBtn = document.createElement("button");
+      dismissBtn.className = "btn-secondary";
+      dismissBtn.textContent = "Dismiss";
+      dismissBtn.onclick = async () => {
+        const project = await ppro.Project.getActiveProject();
+        await queueModule.dismissHistoryEntry(project, entry);
+        renderClipsList();
+      };
+      actions.appendChild(dismissBtn);
+    }
 
-      row.appendChild(actionsCell);
-      tbody.appendChild(row);
-    });
+    if (actions.children.length > 0) card.appendChild(actions);
+
+    return card;
+  }
+
+  /*
+   * Phase 5 (round 2): queueModule.loadHistory() loads every past job into
+   * memory same as always -- "Your Clips" only ever showed the current-run
+   * subset (isCurrentRunEntry), and everything else was simply never
+   * rendered anywhere. This renders that other half into its own
+   * collapsed-by-default "Past Productions" list instead, reusing the same
+   * buildClipCard -- a past entry is always !live, so it naturally gets
+   * just a plain status line and, if it has one, an "Open in Auphonic"
+   * button; no Cancel/Retry/Dismiss ever renders for it, same as before.
+   */
+  function renderClipsList() {
+    const allEntries = queueModule.getEntries();
+
+    const current = allEntries.filter(isCurrentRunEntry);
+    const list = el("clipsList");
+    list.innerHTML = "";
+    if (current.length === 0) {
+      hide("clipsSection");
+    } else {
+      show("clipsSection");
+      current.forEach((entry) => list.appendChild(buildClipCard(entry)));
+    }
+
+    const past = allEntries.filter((entry) => !isCurrentRunEntry(entry));
+    const pastList = el("pastProductionsList");
+    pastList.innerHTML = "";
+    if (past.length === 0) {
+      hide("pastProductionsSection");
+    } else {
+      show("pastProductionsSection");
+      past.forEach((entry) => pastList.appendChild(buildClipCard(entry)));
+    }
   }
 
   async function wireProcessSection() {
@@ -580,16 +809,17 @@
       const apiKey = state.apiKey;
       el("confirmBtn").disabled = true;
       try {
-        if (state.consolidating) {
-          await queueModule.enqueueConsolidated(project, state.pendingUnits);
-        } else {
-          await queueModule.enqueue(project, state.pendingUnits);
-        }
+        const newEntries = state.consolidating
+          ? await queueModule.enqueueConsolidated(project, state.pendingUnits)
+          : await queueModule.enqueue(project, state.pendingUnits);
+        // This click's own jobs are the new "current run" -- replaces
+        // whatever an earlier click left staged, so Your Clips always
+        // reflects the batch just confirmed rather than accumulating.
+        state.currentBatchJobIds = new Set(newEntries.map((e) => e.job.jobId));
         state.pendingUnits = [];
         state.consolidating = false;
         hide("estimateBox");
-        renderQueueTable();
-        show("progressBox");
+        renderClipsList();
         await queueModule.runQueue(project, apiKey, queueHooks());
       } finally {
         el("confirmBtn").disabled = false;
@@ -599,7 +829,17 @@
 
   /* ------------------------------------------------------------------ cache */
 
+  function wireDisclosure(toggleId, panelId) {
+    el(toggleId).addEventListener("click", () => {
+      const isOpen = !el(panelId).classList.contains("hidden");
+      el(panelId).classList.toggle("hidden", isOpen);
+      el(toggleId).setAttribute("aria-expanded", String(!isOpen));
+    });
+  }
+
   function wireCacheSection() {
+    wireDisclosure("advancedToggle", "advancedPanel");
+
     el("revealCacheBtn").addEventListener("click", async () => {
       const result = await cache.revealCacheFolder();
       setHtml(
@@ -623,17 +863,49 @@
     });
   }
 
+  /* --------------------------------------------------------------- bugs */
+
+  // No new backend for this -- just opens the editor's own mail client via
+  // mailto: (same uxp.shell.openExternal mechanism already used for "Open
+  // in Auphonic"), pre-filled with a plain-language template plus a little
+  // technical context. "mailto" was added to manifest.json's launchProcess
+  // schemes (previously "https" only) so this is allowed to open at all.
+  function buildBugReportMailto() {
+    let platform = "unknown";
+    try {
+      platform = navigator.platform || navigator.userAgent || "unknown";
+    } catch (e) {
+      // Non-fatal -- the report still works without this line.
+    }
+    const subject = "Awwphonic bug report";
+    const body =
+      "What happened?\n(describe the issue here)\n\n" +
+      "What were you trying to do?\n(describe here)\n\n" +
+      "--\n" +
+      `Plugin version: ${PLUGIN_VERSION}\n` +
+      `Platform: ${platform}`;
+    return `mailto:${BUG_REPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  function wireBugReportSection() {
+    el("reportBugBtn").addEventListener("click", () => {
+      uxp.shell.openExternal(buildBugReportMailto());
+    });
+  }
+
   async function init() {
     wireAccountSection();
     await wireProcessSection();
     await wireLabelColorSection();
     wireCacheSection();
+    wireDisclosure("pastProductionsToggle", "pastProductionsPanel");
+    wireBugReportSection();
     await tryAutoConnect();
     try {
       const project = await ppro.Project.getActiveProject();
       if (project) {
         await queueModule.loadHistory(project);
-        renderQueueTable();
+        renderClipsList();
       }
     } catch (e) {
       // Non-fatal -- history is a bonus; the panel still works without it.
