@@ -26,13 +26,11 @@
 
     if (billableSeconds > durationSeconds) {
       warnings.push(
-        `Auphonic bills a 3-minute minimum per production. This clip is ${formatDuration(
-          durationSeconds
-        )}, so it will be billed as ${formatDuration(billableSeconds)}.`
+        `Auphonic's 3-minute minimum means this ${formatDuration(durationSeconds)} clip bills as ${formatDuration(billableSeconds)}.`
       );
     }
     if (durationSeconds > LONG_CLIP_WARNING_SECONDS) {
-      warnings.push(`This is a long clip (${formatDuration(durationSeconds)}) -- double-check it's the one you meant to select.`);
+      warnings.push(`Long clip (${formatDuration(durationSeconds)}) - double-check you selected the right one.`);
     }
     if (typeof availableCreditsHours === "number" && billableHours > availableCreditsHours) {
       warnings.push(

@@ -327,7 +327,35 @@
         throw new AuphonicPluginError(CATEGORY.DOWNLOAD_FAILED, "Auphonic reported no WAV output file.");
       }
       const wavBytes = await auphonicClient.downloadOutputFile(apiKey, wavMeta.download_url);
-      const outputFile = await paths.writeBinary(jobFolder, "output.wav", wavBytes);
+
+      /*
+       * Trim to the clip's own originally-selected duration before placing
+       * it -- confirmed live that the downloaded file can come back longer
+       * than what was actually selected (root cause not pinned down: the
+       * export step's own subsequence content was independently confirmed
+       * correct right before rendering, and Auphonic's own input/output
+       * were confirmed byte-identical, so whatever inflates it happens
+       * somewhere this project hasn't isolated yet -- see HANDOFF.md). This
+       * guarantees the placed result never runs longer than the original
+       * clip regardless of that unresolved cause. Reuses the exact same
+       * wav.sliceWav() the consolidated-batch path already relies on for
+       * its own per-unit slicing -- a pure byte-level operation, no
+       * Premiere API involved, already proven live. Never pads if the
+       * download comes back shorter than expected; only ever trims extra.
+       */
+      const expectedSeconds = live.endTime.seconds - live.startTime.seconds;
+      const actualSeconds = wav.wavDurationSeconds(wavBytes);
+      let placedBytes = wavBytes;
+      if (actualSeconds > expectedSeconds) {
+        placedBytes = wav.sliceWav(wavBytes, 0, expectedSeconds);
+        onLog(
+          entry,
+          `Downloaded audio was ${actualSeconds.toFixed(1)}s -- trimmed to the clip's own ${expectedSeconds.toFixed(1)}s before placing.`,
+          "warn"
+        );
+      }
+
+      const outputFile = await paths.writeBinary(jobFolder, "output.wav", placedBytes);
       job.outputCachePath = outputFile.nativePath;
       onLog(entry, `Downloaded: ${outputFile.nativePath}`, "ok");
 

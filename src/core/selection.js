@@ -315,6 +315,19 @@
     const isProxy = await checkOptionalFlag(clipProjectItem, "isProxy", diagnostics);
     if (isProxy) return { eligible: false, clipName, diagnostics, reason: "Proxy media is not supported -- switch to full-resolution media first." };
 
+    /*
+     * Deferred from Phase 3 (see project memory project-disabled-clip-edge-case):
+     * a clip whose audio track item is already disabled -- e.g. Auphonic
+     * already processed it once -- was never rejected here, so the job ran
+     * all the way through export/upload before Auphonic's own server
+     * rejected the resulting silence with a generic "processing error."
+     * checkOptionalFlag degrades gracefully (treats as not-disabled, with a
+     * diagnostic) if isDisabled() isn't available on this build, same as
+     * every other optional-flag check above.
+     */
+    const isDisabled = await checkOptionalFlag(trackItem, "isDisabled", diagnostics);
+    if (isDisabled) return { eligible: false, clipName, diagnostics, reason: "This clip's audio is already disabled." };
+
     let mediaPath = null;
     try {
       mediaPath = await clipProjectItem.getMediaFilePath();

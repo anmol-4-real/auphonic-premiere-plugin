@@ -35,6 +35,37 @@
   const PLUGIN_VERSION = "1.0.0";
   const BUG_REPORT_EMAIL = "anmolpreet@hackerrank.com";
 
+  /*
+   * Rough, approximate stage weighting for the combined progress bar on a
+   * clip card -- there's no real end-to-end percentage anywhere in the
+   * pipeline (Auphonic's own "processing" step reports no byte/percent
+   * progress at all, just a status string), so this is a reasonable-looking
+   * approximation across queued -> ... -> placing, not a measured one.
+   * "uploading" is the one stage with real byte-level progress (the
+   * existing "Uploading... N%" log line) -- its own range is interpolated
+   * using that, everything else jumps straight to its base value.
+   */
+  const STAGE_PROGRESS = {
+    queued: 2,
+    validating: 8,
+    exporting: 18,
+    creating_production: 28,
+    uploading: { start: 35, end: 60 },
+    processing: 65,
+    downloading: 78,
+    placing: 90,
+  };
+
+  function computeProgressPercent(job) {
+    const stage = STAGE_PROGRESS[job.status];
+    if (stage === undefined) return null;
+    if (typeof stage === "object") {
+      const pct = state.uploadPct[job.jobId];
+      return Math.round(typeof pct === "number" ? stage.start + (pct / 100) * (stage.end - stage.start) : stage.start);
+    }
+    return stage;
+  }
+
   const state = {
     apiKey: null,
     presets: [],
@@ -46,6 +77,12 @@
     // that re-render instead of being wiped each time.
     clipLogs: {},
     expandedClips: {},
+    // Collapsed-by-default state for a batch's own member-list disclosure,
+    // keyed by batchId -- see appendEntriesWithBatchProgress.
+    expandedBatches: {},
+    // Latest parsed "Uploading... N%" value per jobId, for the combined
+    // progress bar's one real-progress stage -- see STAGE_PROGRESS above.
+    uploadPct: {},
     // Phase 5 (round 2): "current run" now means exactly one thing -- the
     // batch of jobIds created by the most recent Confirm & Process click
     // (see wireProcessSection below), plus anything the user just retried.
@@ -75,18 +112,16 @@
     return new Promise((resolve) => {
       setHtml("collisionText", message);
       show("collisionPrompt");
-      const confirmBtn = el("collisionConfirmBtn");
-      const cancelBtn = el("collisionCancelBtn");
       const cleanup = (result) => {
         hide("collisionPrompt");
-        confirmBtn.removeEventListener("click", onConfirm);
-        cancelBtn.removeEventListener("click", onCancel);
+        detachConfirm();
+        detachCancel();
         resolve(result);
       };
       const onConfirm = () => cleanup(true);
       const onCancel = () => cleanup(false);
-      confirmBtn.addEventListener("click", onConfirm);
-      cancelBtn.addEventListener("click", onCancel);
+      const detachConfirm = onActivate("collisionConfirmBtn", onConfirm);
+      const detachCancel = onActivate("collisionCancelBtn", onCancel);
     });
   }
 
@@ -104,6 +139,48 @@
 
   function hide(id) {
     el(id).classList.add("hidden");
+  }
+
+  /*
+   * Every clickable control in this panel is a plain `<div role="button"
+   * tabindex="0">`, never a real `<button>` -- see the top-of-file note in
+   * styles.css for why (a real `<button>` renders with native chrome no
+   * CSS override, including `!important`, could fully strip in this host,
+   * confirmed live across three separate attempts). These three helpers
+   * are what a real `<button>` would have given for free: click *and*
+   * keyboard (Enter/Space) activation, and a disabled state that both
+   * looks disabled and actually blocks clicks (`pointer-events: none` via
+   * the `.is-disabled` class -- see styles.css).
+   */
+  function onActivate(elOrId, handler) {
+    const target = typeof elOrId === "string" ? el(elOrId) : elOrId;
+    const onKey = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handler(event);
+      }
+    };
+    target.addEventListener("click", handler);
+    target.addEventListener("keydown", onKey);
+    return () => {
+      target.removeEventListener("click", handler);
+      target.removeEventListener("keydown", onKey);
+    };
+  }
+
+  function setBtnDisabled(elOrId, isDisabled) {
+    const target = typeof elOrId === "string" ? el(elOrId) : elOrId;
+    target.classList.toggle("is-disabled", isDisabled);
+    target.setAttribute("aria-disabled", String(isDisabled));
+  }
+
+  function makeBtn(className, text) {
+    const b = document.createElement("div");
+    b.className = className;
+    b.setAttribute("role", "button");
+    b.setAttribute("tabindex", "0");
+    b.textContent = text;
+    return b;
   }
 
   /*
@@ -129,10 +206,17 @@
   // shows, unabridged, inside that clip's "Show details" panel.
   function shortErrorSummary(message) {
     if (!message) return "";
-    const cutoff = message.indexOf(". ");
-    if (cutoff > -1 && cutoff < 100) return message.slice(0, cutoff + 1);
-    if (message.length <= 100) return message;
-    return `${message.slice(0, 100).trim()}...`;
+    const LIMIT = 40;
+    const sentenceEnd = message.indexOf(". ");
+    if (sentenceEnd > -1 && sentenceEnd < LIMIT) return message.slice(0, sentenceEnd + 1);
+    if (message.length <= LIMIT) return message;
+    // A few words, then "...", cut at the last whole word rather than
+    // mid-word (was slicing to an exact character count regardless of
+    // word boundaries, which produced things like "...in your prese...").
+    const truncated = message.slice(0, LIMIT);
+    const lastSpace = truncated.lastIndexOf(" ");
+    const base = lastSpace > 10 ? truncated.slice(0, lastSpace) : truncated;
+    return `${base.trim()}...`;
   }
 
   /* ------------------------------------------------------------ account/key */
@@ -159,7 +243,7 @@
   }
 
   function wireAccountSection() {
-    el("saveKeyBtn").addEventListener("click", async () => {
+    onActivate("saveKeyBtn", async () => {
       const apiKey = el("apiKeyInput").value.trim();
       if (!apiKey) {
         setHtml("keyStatus", '<span class="bad">Enter an API key first.</span>');
@@ -168,11 +252,23 @@
       await connectWithKey(apiKey, { persist: true });
     });
 
-    el("changeKeyBtn").addEventListener("click", () => {
+    onActivate("changeKeyBtn", () => {
       hide("connectCollapsed");
       show("connectExpanded");
+      show("cancelChangeKeyBtn");
       el("apiKeyInput").value = "";
       setHtml("keyStatus", '<span class="dim">Paste a new key and click Connect.</span>');
+    });
+
+    // Backs out of "Change key" without touching the already-saved key --
+    // only reachable via changeKeyBtn above, so an existing connection is
+    // guaranteed here (there was previously no way back to the collapsed
+    // "Connected" line short of actually entering and saving a new key).
+    onActivate("cancelChangeKeyBtn", () => {
+      hide("connectExpanded");
+      hide("cancelChangeKeyBtn");
+      show("connectCollapsed");
+      el("apiKeyInput").value = "";
     });
   }
 
@@ -202,7 +298,10 @@
       if (settings.presetUuid && presets.some((p) => p.uuid === settings.presetUuid)) {
         select.value = settings.presetUuid;
       }
-      setHtml("presetStatus", `<span class="ok">${presets.length} preset(s) loaded.</span>`);
+      // No lingering "N preset(s) loaded" success message -- the loading
+      // and error states below are still shown since those are actually
+      // useful; a successful load just clears the line.
+      setHtml("presetStatus", "");
       select.addEventListener("change", () => {
         cache.saveSettings({ presetUuid: select.value });
       });
@@ -293,10 +392,15 @@
     el("labelColorButtonText").textContent = labelColorDisplayName(value);
   }
 
+  function setColorListOpen(isOpen) {
+    el("labelColorList").classList.toggle("hidden", !isOpen);
+    el("labelColorButton").setAttribute("aria-expanded", String(isOpen));
+  }
+
   function selectLabelColor(value) {
     state.labelColor = value;
     setColorSelectButton(value);
-    hide("labelColorList");
+    setColorListOpen(false);
     cache.saveSettings({ labelColor: value });
   }
 
@@ -306,6 +410,8 @@
     labelColorNames().forEach((name) => {
       const row = document.createElement("div");
       row.className = "color-select-option";
+      row.setAttribute("role", "option");
+      row.setAttribute("tabindex", "0");
       const swatch = document.createElement("span");
       swatch.className = "color-swatch";
       paintSwatch(swatch, name);
@@ -313,7 +419,7 @@
       const label = document.createElement("span");
       label.textContent = labelColorDisplayName(name);
       row.appendChild(label);
-      row.addEventListener("click", () => selectLabelColor(name));
+      onActivate(row, () => selectLabelColor(name));
       list.appendChild(row);
     });
   }
@@ -325,12 +431,12 @@
     state.labelColor = isValid ? settings.labelColor : "none";
     setColorSelectButton(state.labelColor);
 
-    el("labelColorButton").addEventListener("click", (event) => {
+    onActivate("labelColorButton", (event) => {
       event.stopPropagation();
-      el("labelColorList").classList.toggle("hidden");
+      setColorListOpen(el("labelColorList").classList.contains("hidden"));
     });
     document.addEventListener("click", (event) => {
-      if (!el("labelColorSelect").contains(event.target)) hide("labelColorList");
+      if (!el("labelColorSelect").contains(event.target)) setColorListOpen(false);
     });
   }
 
@@ -498,7 +604,7 @@
       });
 
       const readyNames = state.pendingUnits.map((b) =>
-        b.originalSelectionType === "video" ? `${b.clipName} (video clip -- using linked audio)` : b.clipName
+        b.originalSelectionType === "video" ? `${b.clipName} (video clip - using linked audio)` : b.clipName
       );
       const statusLines = [
         `<span class="ok">${state.pendingUnits.length} clip(s) ready${state.consolidating ? " (consolidating into one production)" : ""}: ${readyNames.join(", ")}</span>`,
@@ -573,8 +679,81 @@
         if (!state.clipLogs[jobId]) state.clipLogs[jobId] = [];
         state.clipLogs[jobId].push({ message, cls });
         appendLiveLogLine(jobId, message, cls);
+        const uploadMatch = /Uploading\.\.\. (\d+)%/.exec(message);
+        if (uploadMatch) {
+          state.uploadPct[jobId] = Number(uploadMatch[1]);
+          updateLiveProgressBar(jobId, entry.job);
+        }
       },
     };
+  }
+
+  // Same fast-path idea as appendLiveLogLine below -- upload progress can
+  // fire many times per job, well more often than the status changes that
+  // trigger a full renderClipsList(), so this updates an already-rendered
+  // bar's width directly instead of waiting for the next full re-render.
+  // A batch member has no bar of its own (see buildClipCard) -- its shared
+  // batch-progress row is the one that needs the live update instead.
+  function updateLiveProgressBar(jobId, job) {
+    const percent = computeProgressPercent(job);
+    if (percent === null) return;
+    const targetId = job.batchId ? `batchProgress-${job.batchId}` : `clipProgress-${jobId}`;
+    const fill = document.getElementById(targetId);
+    const pctLabel = document.getElementById(`${targetId}-pct`);
+    if (fill) fill.style.width = `${percent}%`;
+    if (pctLabel) pctLabel.textContent = `${percent}%`;
+  }
+
+  // Shared by both the per-card progress row (a solo job) and the
+  // per-batch one (see buildBatchProgressHeader below) -- a thin bar plus a
+  // minimal percentage label, nothing more.
+  function buildProgressRow(percent, fillId) {
+    const row = document.createElement("div");
+    row.className = "progress-row";
+    const bar = document.createElement("div");
+    bar.className = "progress-bar";
+    const fill = document.createElement("div");
+    fill.className = "progress-bar-fill";
+    if (fillId) fill.id = fillId;
+    fill.style.width = `${percent}%`;
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    const pct = document.createElement("span");
+    pct.className = "progress-percent";
+    if (fillId) pct.id = `${fillId}-pct`;
+    pct.textContent = `${percent}%`;
+    row.appendChild(pct);
+    return row;
+  }
+
+  /*
+   * One shared progress row for an entire consolidated batch, rendered
+   * once above its member cards -- every member's status is broadcast
+   * together by processBatch (see queue.js), so N identical per-card bars
+   * were always showing the exact same number N times over. The header
+   * itself is a disclosure toggle -- collapsed by default (state tracked
+   * in state.expandedBatches, keyed by batchId) -- individual member
+   * cards are a "Show details"-style drill-in, not something shown by
+   * default alongside every other clip.
+   */
+  function buildBatchProgressHeader(members, isExpanded) {
+    const first = members[0].job;
+    const wrap = document.createElement("div");
+    wrap.className = "batch-progress";
+    const header = document.createElement("div");
+    header.className = "batch-progress-header disclosure-toggle";
+    header.setAttribute("role", "button");
+    header.setAttribute("tabindex", "0");
+    header.setAttribute("aria-expanded", String(isExpanded));
+    header.innerHTML =
+      '<svg class="chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
+      `Batch of ${members.length} - ${jobModel.STATUS_LABELS[first.status] || first.status}`;
+    wrap.appendChild(header);
+    const percent = computeProgressPercent(first);
+    if (percent !== null) {
+      wrap.appendChild(buildProgressRow(percent, `batchProgress-${first.batchId}`));
+    }
+    return { wrap, header };
   }
 
   // Fast path: if this clip's details panel is already in the DOM, append
@@ -613,6 +792,25 @@
     return state.currentBatchJobIds.has(entry.job.jobId);
   }
 
+  // Plain-language facts pulled straight off the persisted job record, for
+  // a card's "Show details" panel when there's no live log to show (a job
+  // from a past session that was never processed this run).
+  function buildJobFactLines(job) {
+    const lines = [];
+    const preset = state.presets.find((p) => p.uuid === job.presetUuid);
+    lines.push(`Preset: ${preset ? preset.preset_name : job.presetUuid || "unknown"}`);
+    if (job.labelColor && job.labelColor !== "none") {
+      lines.push(`Label color: ${labelColorDisplayName(job.labelColor)}`);
+    }
+    if (job.extraFormats && job.extraFormats.length > 0) {
+      lines.push(`Extra formats: ${job.extraFormats.join(", ").toUpperCase()}`);
+    }
+    if (job.productionId) lines.push(`Production: ${job.productionId}`);
+    if (job.createdAt) lines.push(`Created: ${new Date(job.createdAt).toLocaleString()}`);
+    if (job.outputCachePath) lines.push(`Output file: ${job.outputCachePath}`);
+    return lines;
+  }
+
   function buildClipCard(entry) {
     const { job, live } = entry;
     const jobId = job.jobId;
@@ -633,19 +831,23 @@
     name.textContent = job.originalClipName;
     row.appendChild(name);
 
-    if (job.batchId) {
-      const batchTag = document.createElement("span");
-      batchTag.className = "batch-tag";
-      batchTag.textContent = "Batch";
-      row.appendChild(batchTag);
-    }
-
     const statusLabel = document.createElement("span");
     statusLabel.className = "clip-status-label";
     statusLabel.textContent = jobModel.STATUS_LABELS[job.status] || job.status;
     row.appendChild(statusLabel);
 
     card.appendChild(row);
+
+    // Combined progress across the whole pipeline (queued through
+    // placing) -- see STAGE_PROGRESS above. Only while a job is actually
+    // in flight; a terminal job's status label already says everything.
+    // A batch member gets none of its own -- its shared batchProgress row
+    // (built once per batch, see buildBatchProgressHeader) covers it instead,
+    // since every member's status changes together anyway.
+    if (!job.batchId && !["inserted", "failed", "canceled"].includes(job.status)) {
+      const percent = computeProgressPercent(job);
+      if (percent !== null) card.appendChild(buildProgressRow(percent, `clipProgress-${jobId}`));
+    }
 
     if (job.status === "failed" && job.errorMessage) {
       const detail = document.createElement("div");
@@ -657,18 +859,20 @@
       const warning = document.createElement("div");
       warning.className = "warn clip-card-note";
       warning.textContent =
-        "This clip may already have an Auphonic production in progress -- check auphonic.com before reprocessing it.";
+        "This clip may already have an Auphonic production in progress - check auphonic.com before reprocessing it.";
       card.appendChild(warning);
     }
 
-    // "Show details" -- collapsed by default, reveals the exact same
-    // technical log lines onLog has always produced (plus, for a failed
-    // job, the error category that used to prefix the default-visible line).
-    const hasDetails = (state.clipLogs[jobId] && state.clipLogs[jobId].length > 0) || job.status === "failed";
-    if (hasDetails) {
+    // "Show details" -- collapsed by default, on every card (a past job
+    // with no live log lines still has a persisted job record worth
+    // showing, so this no longer only appears when there happens to be a
+    // log or a failure -- see buildJobFactLines below for that fallback).
+    {
       const isExpanded = Boolean(state.expandedClips[jobId]);
-      const toggle = document.createElement("button");
+      const toggle = document.createElement("div");
       toggle.className = "disclosure-toggle small";
+      toggle.setAttribute("role", "button");
+      toggle.setAttribute("tabindex", "0");
       toggle.setAttribute("aria-expanded", String(isExpanded));
       toggle.innerHTML =
         '<svg class="chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
@@ -678,6 +882,7 @@
       const log = document.createElement("div");
       log.className = "log";
       log.id = `clipLog-${jobId}`;
+      const logLines = state.clipLogs[jobId] || [];
       if (job.status === "failed" && job.errorMessage) {
         const fullLine = document.createElement("div");
         fullLine.className = "bad";
@@ -686,14 +891,25 @@
           : job.errorMessage;
         log.appendChild(fullLine);
       }
-      (state.clipLogs[jobId] || []).forEach(({ message, cls }) => {
+      logLines.forEach(({ message, cls }) => {
         const line = document.createElement("div");
         if (cls) line.className = cls;
         line.textContent = message;
         log.appendChild(line);
       });
+      // No live log lines (e.g. a job loaded from a past session, never
+      // processed this run) -- fall back to the persisted job record's
+      // own facts instead of leaving the panel empty.
+      if (logLines.length === 0 && !(job.status === "failed" && job.errorMessage)) {
+        buildJobFactLines(job).forEach((text) => {
+          const line = document.createElement("div");
+          line.className = "dim";
+          line.textContent = text;
+          log.appendChild(line);
+        });
+      }
       details.appendChild(log);
-      toggle.addEventListener("click", () => {
+      onActivate(toggle, () => {
         const nowExpanded = !state.expandedClips[jobId];
         state.expandedClips[jobId] = nowExpanded;
         toggle.setAttribute("aria-expanded", String(nowExpanded));
@@ -710,22 +926,18 @@
     actions.className = "clip-card-actions";
 
     if (live && queueModule.CANCELABLE_STATUSES.includes(job.status)) {
-      const cancelBtn = document.createElement("button");
-      cancelBtn.className = "btn-secondary";
-      cancelBtn.textContent = "Cancel";
-      cancelBtn.onclick = async () => {
+      const cancelBtn = makeBtn("btn btn-secondary", "Cancel");
+      onActivate(cancelBtn, async () => {
         await queueModule.cancelJob(entry);
         renderClipsList();
-      };
+      });
       actions.appendChild(cancelBtn);
     }
 
     if (live && job.status === "failed") {
-      const retryBtn = document.createElement("button");
-      retryBtn.className = "btn-secondary";
-      retryBtn.textContent = "Retry";
-      retryBtn.onclick = async () => {
-        retryBtn.disabled = true;
+      const retryBtn = makeBtn("btn btn-secondary", "Retry");
+      onActivate(retryBtn, async () => {
+        setBtnDisabled(retryBtn, true);
         // Retrying (even from Past Productions) makes it "current" again --
         // and if it's a consolidated batch member whose shared work never
         // completed, retryJob resets every failed sibling too, so promote
@@ -736,27 +948,23 @@
           .forEach((e) => state.currentBatchJobIds.add(e.job.jobId));
         await queueModule.retryJob(entry, state.apiKey, queueHooks());
         renderClipsList();
-      };
+      });
       actions.appendChild(retryBtn);
     }
 
     if (job.productionId) {
-      const openBtn = document.createElement("button");
-      openBtn.className = "btn-secondary";
-      openBtn.textContent = "Open in Auphonic";
-      openBtn.onclick = () => uxp.shell.openExternal(buildProductionUrl(job.productionId));
+      const openBtn = makeBtn("btn btn-secondary", "Open in Auphonic");
+      onActivate(openBtn, () => uxp.shell.openExternal(buildProductionUrl(job.productionId)));
       actions.appendChild(openBtn);
     }
 
     if (!live && !["inserted", "failed", "canceled"].includes(job.status)) {
-      const dismissBtn = document.createElement("button");
-      dismissBtn.className = "btn-secondary";
-      dismissBtn.textContent = "Dismiss";
-      dismissBtn.onclick = async () => {
+      const dismissBtn = makeBtn("btn btn-secondary", "Dismiss");
+      onActivate(dismissBtn, async () => {
         const project = await ppro.Project.getActiveProject();
         await queueModule.dismissHistoryEntry(project, entry);
         renderClipsList();
-      };
+      });
       actions.appendChild(dismissBtn);
     }
 
@@ -775,6 +983,75 @@
    * just a plain status line and, if it has one, an "Open in Auphonic"
    * button; no Cancel/Retry/Dismiss ever renders for it, same as before.
    */
+  // Past Productions only shows this many most-recent PRODUCTIONS (a
+  // consolidated batch counts as one, not one per member) by default --
+  // queueModule.loadHistory() itself still loads everything, this is
+  // purely a display cap so the list doesn't grow without bound the
+  // longer this panel stays open across many sessions.
+  const PAST_PRODUCTIONS_LIMIT = 15;
+
+  // Groups entries into one item per production (a batch's members
+  // collapse into a single group keyed by its shared batchId; a solo job
+  // is its own group of one), each carrying the most recent createdAt
+  // among its members so the groups can be sorted newest-first and capped
+  // without ever splitting one batch's cards across the cutoff.
+  function groupIntoProductions(entries) {
+    const groups = [];
+    const seenBatchIds = new Set();
+    entries.forEach((entry) => {
+      const batchId = entry.job.batchId;
+      if (batchId) {
+        if (seenBatchIds.has(batchId)) return;
+        seenBatchIds.add(batchId);
+        const members = entries.filter((e) => e.job.batchId === batchId);
+        const newest = members.reduce(
+          (max, e) => (e.job.createdAt > max ? e.job.createdAt : max),
+          members[0].job.createdAt || ""
+        );
+        groups.push({ sortKey: newest, entries: members });
+      } else {
+        groups.push({ sortKey: entry.job.createdAt || "", entries: [entry] });
+      }
+    });
+    return groups;
+  }
+
+  // Appends each entry's card into container, inserting one shared
+  // batchProgress row right before the first member of each batchId
+  // encountered -- entries within one batch are always contiguous in
+  // practice (enqueueConsolidated adds them together), but this groups
+  // correctly even if that ever weren't true.
+  function appendEntriesWithBatchProgress(container, entries) {
+    const renderedBatchIds = new Set();
+    entries.forEach((entry) => {
+      const batchId = entry.job.batchId;
+      if (!batchId) {
+        container.appendChild(buildClipCard(entry));
+        return;
+      }
+      if (renderedBatchIds.has(batchId)) return;
+      renderedBatchIds.add(batchId);
+
+      const members = entries.filter((e) => e.job.batchId === batchId);
+      const isExpanded = Boolean(state.expandedBatches[batchId]);
+      const { wrap, header } = buildBatchProgressHeader(members, isExpanded);
+
+      const membersWrap = document.createElement("div");
+      membersWrap.className = "batch-members" + (isExpanded ? "" : " hidden");
+      members.forEach((member) => membersWrap.appendChild(buildClipCard(member)));
+
+      onActivate(header, () => {
+        const nowExpanded = !state.expandedBatches[batchId];
+        state.expandedBatches[batchId] = nowExpanded;
+        header.setAttribute("aria-expanded", String(nowExpanded));
+        membersWrap.classList.toggle("hidden", !nowExpanded);
+      });
+
+      container.appendChild(wrap);
+      container.appendChild(membersWrap);
+    });
+  }
+
   function renderClipsList() {
     const allEntries = queueModule.getEntries();
 
@@ -785,7 +1062,7 @@
       hide("clipsSection");
     } else {
       show("clipsSection");
-      current.forEach((entry) => list.appendChild(buildClipCard(entry)));
+      appendEntriesWithBatchProgress(list, current);
     }
 
     const past = allEntries.filter((entry) => !isCurrentRunEntry(entry));
@@ -795,19 +1072,28 @@
       hide("pastProductionsSection");
     } else {
       show("pastProductionsSection");
-      past.forEach((entry) => pastList.appendChild(buildClipCard(entry)));
+      const pastGroups = groupIntoProductions(past).sort((a, b) => (b.sortKey > a.sortKey ? 1 : -1));
+      const visibleGroups = pastGroups.slice(0, PAST_PRODUCTIONS_LIMIT);
+      const hiddenCount = pastGroups.length - visibleGroups.length;
+      appendEntriesWithBatchProgress(pastList, visibleGroups.flatMap((g) => g.entries));
+      if (hiddenCount > 0) {
+        const note = document.createElement("div");
+        note.className = "dim past-productions-note";
+        note.textContent = `+ ${hiddenCount} older production${hiddenCount === 1 ? "" : "s"} not shown.`;
+        pastList.appendChild(note);
+      }
     }
   }
 
   async function wireProcessSection() {
     await wireExtraFormatsSection();
     await wireConsolidateSection();
-    el("checkSelectionBtn").addEventListener("click", checkSelection);
-    el("confirmBtn").addEventListener("click", async () => {
+    onActivate("checkSelectionBtn", checkSelection);
+    onActivate("confirmBtn", async () => {
       if (!state.pendingUnits || state.pendingUnits.length === 0) return;
       const project = state.pendingUnits[0].project;
       const apiKey = state.apiKey;
-      el("confirmBtn").disabled = true;
+      setBtnDisabled("confirmBtn", true);
       try {
         const newEntries = state.consolidating
           ? await queueModule.enqueueConsolidated(project, state.pendingUnits)
@@ -822,7 +1108,7 @@
         renderClipsList();
         await queueModule.runQueue(project, apiKey, queueHooks());
       } finally {
-        el("confirmBtn").disabled = false;
+        setBtnDisabled("confirmBtn", false);
       }
     });
   }
@@ -830,7 +1116,7 @@
   /* ------------------------------------------------------------------ cache */
 
   function wireDisclosure(toggleId, panelId) {
-    el(toggleId).addEventListener("click", () => {
+    onActivate(toggleId, () => {
       const isOpen = !el(panelId).classList.contains("hidden");
       el(panelId).classList.toggle("hidden", isOpen);
       el(toggleId).setAttribute("aria-expanded", String(!isOpen));
@@ -840,7 +1126,7 @@
   function wireCacheSection() {
     wireDisclosure("advancedToggle", "advancedPanel");
 
-    el("revealCacheBtn").addEventListener("click", async () => {
+    onActivate("revealCacheBtn", async () => {
       const result = await cache.revealCacheFolder();
       setHtml(
         "cacheStatus",
@@ -850,13 +1136,13 @@
       );
     });
 
-    el("cleanFailedBtn").addEventListener("click", async () => {
+    onActivate("cleanFailedBtn", async () => {
       const project = await ppro.Project.getActiveProject();
       const count = await cache.cleanFailedTempExports(project);
       setHtml("cacheStatus", `<span class="ok">Removed temp files from ${count} failed job file(s).</span>`);
     });
 
-    el("cleanCompletedBtn").addEventListener("click", async () => {
+    onActivate("cleanCompletedBtn", async () => {
       const project = await ppro.Project.getActiveProject();
       const count = await cache.deleteCompletedInputTemps(project);
       setHtml("cacheStatus", `<span class="ok">Deleted ${count} completed job's input temp file(s).</span>`);
@@ -888,7 +1174,7 @@
   }
 
   function wireBugReportSection() {
-    el("reportBugBtn").addEventListener("click", () => {
+    onActivate("reportBugBtn", () => {
       uxp.shell.openExternal(buildBugReportMailto());
     });
   }

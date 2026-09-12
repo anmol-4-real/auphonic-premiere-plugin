@@ -10,15 +10,17 @@
     <div id="connectExpanded">
       <div class="card-label">Connect to Auphonic</div>
       <p class="hint">Paste your Auphonic API key once. It's stored securely on this computer.</p>
-      <label for="apiKeyInput">API key</label>
-      <input id="apiKeyInput" type="password" placeholder="paste your key here" />
-      <button id="saveKeyBtn" class="btn-primary">Connect</button>
+      <input id="apiKeyInput" type="password" placeholder="paste your key here" aria-label="API key" />
+      <div class="connect-actions">
+        <div id="saveKeyBtn" class="btn btn-primary" role="button" tabindex="0">Connect</div>
+        <div id="cancelChangeKeyBtn" class="link-btn hidden" role="button" tabindex="0">Cancel</div>
+      </div>
       <div class="status-line" id="keyStatus"><span class="dim">Not connected yet.</span></div>
     </div>
     <div id="connectCollapsed" class="hidden connected-line">
       <span class="status-dot dot-done"></span>
       <span id="connectedSummary"></span>
-      <button id="changeKeyBtn" class="link-btn">Change key</button>
+      <div id="changeKeyBtn" class="link-btn" role="button" tabindex="0">Change key</div>
     </div>
   </section>
 
@@ -26,68 +28,82 @@
     <div class="card-label">Settings</div>
 
     <div class="subgroup-label">Preset &amp; labeling</div>
-    <label for="presetSelect">Preset</label>
-    <select id="presetSelect"></select>
+    <select id="presetSelect" aria-label="Preset"></select>
     <div class="status-line" id="presetStatus"></div>
 
     <label for="labelColorButton">Label color for results</label>
     <div class="color-select" id="labelColorSelect">
-      <button type="button" class="color-select-button" id="labelColorButton">
+      <div class="color-select-button" id="labelColorButton" role="button" tabindex="0" aria-expanded="false">
         <span class="color-swatch" id="labelColorSwatch"></span>
-        <span id="labelColorButtonText">None</span>
-      </button>
+        <span class="color-select-text" id="labelColorButtonText">None</span>
+        <svg class="chevron color-select-chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" />
+        </svg>
+      </div>
       <div class="color-select-list hidden" id="labelColorList"></div>
     </div>
 
     <div class="settings-divider"></div>
 
     <div class="subgroup-label">Extra export formats</div>
-    <p class="hint">Kept in the "Awwphonic Processed Audio" bin for reference -- never placed on the timeline.</p>
+    <p class="hint">Saved to the Awwphonic bin - not placed on your timeline.</p>
     <div class="toggle-row">
       <span>MP3</span>
       <label class="checkbox">
         <input type="checkbox" id="mp3Enabled" />
-        <span class="checkbox-box"></span>
+        <span class="checkbox-box">
+          <svg class="checkbox-check" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+            <path d="M3.5 8.5L6.5 11.5L12.5 4.5" fill="none" stroke="#14150f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
       </label>
     </div>
     <div class="toggle-row">
       <span>AAC</span>
       <label class="checkbox">
         <input type="checkbox" id="aacEnabled" />
-        <span class="checkbox-box"></span>
+        <span class="checkbox-box">
+          <svg class="checkbox-check" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+            <path d="M3.5 8.5L6.5 11.5L12.5 4.5" fill="none" stroke="#14150f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
       </label>
     </div>
 
     <div class="settings-divider"></div>
 
     <div class="subgroup-label">Batching</div>
-    <p class="hint">Cheaper when you're processing several short clips together -- combines them into one Auphonic production instead of billing each one separately.</p>
+    <p class="hint">Combines several clips into one cheaper Auphonic production.</p>
     <div class="toggle-row">
       <span>Consolidate into one production</span>
       <label class="checkbox">
         <input type="checkbox" id="consolidateEnabled" />
-        <span class="checkbox-box"></span>
+        <span class="checkbox-box">
+          <svg class="checkbox-check" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+            <path d="M3.5 8.5L6.5 11.5L12.5 4.5" fill="none" stroke="#14150f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
       </label>
     </div>
   </section>
 
   <section class="card hidden" id="actionCard">
     <div class="card-label">Process Selected Clip(s)</div>
-    <p class="hint">Select one or more audio clips on your timeline in Premiere, then check them below. Selecting a video clip with sound works too -- its linked audio is used automatically.</p>
+    <p class="hint">Select clips on your timeline, then check them below. Video clips' linked audio works too.</p>
 
-    <button id="checkSelectionBtn" class="btn-secondary">Check Selected Clip(s)</button>
+    <div id="checkSelectionBtn" class="btn btn-secondary" role="button" tabindex="0">Check Selected Clip(s)</div>
     <div class="status-line" id="selectionStatus"><span class="dim">Not checked yet.</span></div>
 
     <div id="collisionPrompt" class="hidden inline-alert">
       <div class="status-line" id="collisionText"></div>
-      <button id="collisionConfirmBtn" class="btn-primary">Create New Track &amp; Insert</button>
-      <button id="collisionCancelBtn" class="btn-secondary">Cancel</button>
+      <div id="collisionConfirmBtn" class="btn btn-primary" role="button" tabindex="0">Create New Track &amp; Insert</div>
+      <div id="collisionCancelBtn" class="btn btn-secondary" role="button" tabindex="0">Cancel</div>
     </div>
 
     <div id="estimateBox" class="hidden">
       <div class="status-line" id="estimateText"></div>
       <ul class="warning-list hidden" id="warningList"></ul>
-      <button id="confirmBtn" class="btn-primary">Confirm &amp; Process</button>
+      <div id="confirmBtn" class="btn btn-primary" role="button" tabindex="0">Confirm &amp; Process</div>
     </div>
   </section>
 
@@ -97,34 +113,34 @@
   </section>
 
   <div class="advanced-section hidden" id="pastProductionsSection">
-    <button id="pastProductionsToggle" class="disclosure-toggle" aria-expanded="false">
+    <div id="pastProductionsToggle" class="disclosure-toggle" role="button" tabindex="0" aria-expanded="false">
       <svg class="chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
         <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" />
       </svg>
       Past Productions
-    </button>
-    <div id="pastProductionsPanel" class="hidden">
+    </div>
+    <div id="pastProductionsPanel" class="disclosure-panel hidden">
       <div id="pastProductionsList"></div>
     </div>
   </div>
 
   <div class="advanced-section hidden" id="advancedSection">
-    <button id="advancedToggle" class="disclosure-toggle" aria-expanded="false">
+    <div id="advancedToggle" class="disclosure-toggle" role="button" tabindex="0" aria-expanded="false">
       <svg class="chevron" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
         <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" />
       </svg>
       Advanced
-    </button>
-    <div id="advancedPanel" class="hidden">
-      <button id="revealCacheBtn" class="btn-secondary">Reveal Cache Folder</button>
-      <button id="cleanFailedBtn" class="btn-secondary">Clean Failed Temp Files</button>
-      <button id="cleanCompletedBtn" class="btn-secondary">Delete Completed Input Temp Files</button>
+    </div>
+    <div id="advancedPanel" class="disclosure-panel hidden">
+      <div id="revealCacheBtn" class="btn btn-secondary" role="button" tabindex="0">Reveal Cache Folder</div>
+      <div id="cleanFailedBtn" class="btn btn-secondary" role="button" tabindex="0">Clean Failed Temp Files</div>
+      <div id="cleanCompletedBtn" class="btn btn-secondary" role="button" tabindex="0">Delete Completed Input Temp Files</div>
       <div class="status-line" id="cacheStatus"></div>
     </div>
   </div>
 
   <div class="footer-line">
-    <button id="reportBugBtn" class="link-btn">Report a Bug</button>
+    <div id="reportBugBtn" class="link-btn" role="button" tabindex="0">Report a Bug</div>
   </div>
 
 </main>

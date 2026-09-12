@@ -39,8 +39,34 @@
  * flex children with explicit margins instead of `gap`, every absolutely-
  * positioned box uses explicit top/right/bottom/left instead of `inset`, and
  * dividers are a background-color bar on a plain `div` instead of an `<hr>`.
- * Don't reintroduce any of these without re-confirming it actually paints in
- * this host.
+ * A checkmark drawn as a rotated-border pseudo-element, and later as a CSS
+ * background-image data: URI, both failed the same way (confirmed live --
+ * a stray glyph, then nothing) -- checkmarks are a real inline `<svg>` DOM
+ * node now, toggled by opacity, matching the disclosure chevrons (also real
+ * `<svg>` nodes) that were already working.
+ *
+ * `<button>` ITSELF is the deepest one, worth its own paragraph: every
+ * styled `<button>` in this panel rendered with a native OS appearance
+ * underneath our CSS no matter what was tried against it directly on the
+ * element -- `appearance: none`, then `!important` on every property that
+ * looked native-painted, confirmed live to still lose (a `.btn-primary`
+ * still showed a grey native fill with only a thin rim of the real accent
+ * green right at the rounded corners; a button with an icon *and* text
+ * child still centered the text alone, ignoring `display: flex` on the
+ * button itself). Adobe's own reference sample panels
+ * (reference/uxp-premiere-pro-samples) never use a plain `<button>` for
+ * custom-styled UI either -- they use `<sp-button>`, their own Spectrum
+ * Web Component, which strongly suggests plain `<button>` in this host is
+ * *expected* to carry native chrome no CSS override can fully strip.
+ * Rather than adopt Spectrum's own (Shadow-DOM-encapsulated, separately-
+ * themed) button component, every clickable control in this panel is a
+ * plain `<div role="button" tabindex="0">` instead -- the one element type
+ * that has rendered exactly as specified everywhere else in this app, no
+ * exceptions, the whole time. See panel.js's `onActivate`/`setBtnDisabled`
+ * for the click/keyboard/disabled handling a real `<button>` would have
+ * given for free. Don't reintroduce a real `<button>` for anything meant
+ * to carry custom styling without re-confirming live that this host has
+ * changed.
  */
 
 html, body {
@@ -81,9 +107,9 @@ body {
   padding: 16px;
 }
 .card-label {
-  font-size: 13px;
-  color: var(--text-primary);
-  margin: 0 0 8px;
+  font-size: 14px;
+  color: #ffffff;
+  margin: 0 0 10px;
 }
 .section-label {
   font-size: 13px;
@@ -96,7 +122,7 @@ body {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  margin: 0 0 8px;
+  margin: 0 0 4px;
 }
 /* A background-color bar, not a border -- this webview's default <hr>
    border rendering ignored our color override and painted solid white
@@ -131,6 +157,41 @@ input, select {
   padding: 7px 8px;
   font-size: 12px;
   font-family: inherit;
+  margin: 0;
+}
+/*
+ * A plain <input type="password"> rendered noticeably taller than every
+ * other input/select in the panel, with its placeholder text sitting near
+ * the top instead of centered (confirmed live) -- almost certainly this
+ * host reserving native space for a password reveal/decoration this CSS
+ * can't reach directly. Forcing an explicit height/line-height (rather
+ * than guessing at the exact native mechanism) makes it match every other
+ * field regardless of why the native box wanted to be taller.
+ */
+input {
+  height: 34px;
+  line-height: 20px;
+}
+/*
+ * The grayish rectangle inside the API key field (confirmed live) is
+ * Chromium's own credentials/"suggest strong password" decoration for
+ * password fields, and its forced autofill background -- both render
+ * regardless of our own background-color. These are the standard,
+ * well-documented overrides for exactly this.
+ */
+input::-webkit-credentials-auto-fill-button,
+input::-webkit-strong-password-auto-fill-button {
+  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text-primary);
+  -webkit-box-shadow: 0 0 0 1000px var(--input-bg) inset;
+  box-shadow: 0 0 0 1000px var(--input-bg) inset;
+  transition: background-color 5000s ease-in-out 0s;
 }
 input:focus, select:focus {
   outline: none;
@@ -150,7 +211,8 @@ input:focus, select:focus {
 .color-select-button {
   width: 100%;
   box-sizing: border-box;
-  background: var(--input-bg);
+  /* Matches the preset <select> exactly. */
+  background-color: var(--input-bg);
   color: var(--text-primary);
   border: 1px solid var(--input-border);
   border-radius: 6px;
@@ -162,9 +224,26 @@ input:focus, select:focus {
   margin: 0;
   display: flex;
   align-items: center;
+  user-select: none;
 }
 .color-select-button:hover {
   opacity: 1;
+}
+.color-select-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.color-select-text {
+  flex: 1;
+}
+.color-select-chevron {
+  flex-shrink: 0;
+  margin-left: 8px;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+.color-select-button[aria-expanded="true"] .color-select-chevron {
+  transform: rotate(180deg);
 }
 .color-swatch {
   display: inline-block;
@@ -202,8 +281,23 @@ input:focus, select:focus {
 .color-select-option:hover {
   background: rgba(255, 255, 255, 0.07);
 }
+.color-select-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
-button {
+/*
+ * Every clickable control below is a `<div role="button" tabindex="0">`,
+ * not a real `<button>` -- see the top-of-file note for why. `.btn` is the
+ * shared base (padding/radius/layout); `.is-disabled` stands in for the
+ * native `:disabled` state (also blocks clicks via `pointer-events`, since
+ * a div has no built-in way to refuse them); `:focus-visible` gives it the
+ * keyboard-focus ring a real button gets for free.
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   margin-top: 10px;
   margin-right: 8px;
   border: none;
@@ -212,29 +306,35 @@ button {
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
+  user-select: none;
   transition: opacity 0.1s ease;
 }
-button:hover:not(:disabled) {
+.btn:hover:not(.is-disabled) {
   opacity: 0.88;
 }
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.is-disabled {
+  pointer-events: none;
+}
 .btn-primary {
-  background: var(--accent);
+  background-color: var(--accent);
   color: var(--accent-ink);
   font-weight: 400;
 }
-.btn-primary:disabled {
-  background: var(--input-border);
+.btn-primary.is-disabled {
+  background-color: var(--input-border);
   color: var(--dim);
-  cursor: default;
 }
 .btn-secondary {
-  background: #38383a;
+  background-color: #38383a;
   color: var(--text-primary);
 }
-.btn-secondary:disabled {
-  background: #303032;
+.btn-secondary.is-disabled {
+  background-color: #303032;
   color: var(--dim);
-  cursor: default;
 }
 .link-btn {
   margin: 0;
@@ -243,10 +343,33 @@ button:hover:not(:disabled) {
   color: var(--text-secondary);
   text-decoration: underline;
   font-size: 12px;
+  cursor: pointer;
+  user-select: none;
 }
 .link-btn:hover {
   color: var(--text-primary);
   opacity: 1;
+}
+.link-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/*
+ * A real flex row for Connect + Cancel -- `vertical-align: middle` on an
+ * inline-block sibling next to a much taller `.btn` doesn't actually
+ * center it against the button's visual middle (a classic inline-layout
+ * gotcha, confirmed live: Cancel sat visibly low next to Connect).
+ * `align-items: center` on a flex row is the reliable way to do this.
+ */
+.connect-actions {
+  display: flex;
+  align-items: center;
+}
+.connect-actions > * {
+  margin-left: 12px;
+}
+.connect-actions > *:first-child {
+  margin-left: 0;
 }
 
 .status-line {
@@ -256,15 +379,35 @@ button:hover:not(:disabled) {
 }
 .warning-list {
   margin: 8px 0;
-  padding-left: 18px;
+  padding-left: 0;
+  list-style: none;
   font-size: 12px;
   color: var(--warn);
+}
+.warning-list li {
+  margin-bottom: 4px;
+}
+.warning-list li:last-child {
+  margin-bottom: 0;
 }
 .ok   { color: var(--ok); }
 .bad  { color: var(--bad); }
 .warn { color: var(--warn); }
 .dim  { color: var(--dim); }
-.hidden { display: none; }
+/*
+ * !important is deliberate and correct here, not a workaround: `.hidden`
+ * and `.connected-line` are both single-class selectors (equal
+ * specificity), and `.connected-line`'s own `display: flex` is declared
+ * later in this file, so on that tie source order won -- `#connectCollapsed`
+ * carries both classes, and adding "hidden" to it was silently losing to
+ * "connected-line"'s display (confirmed live: "Change key" stayed visible
+ * after being clicked, because the element `.hidden` was supposed to hide
+ * never actually went `display: none`). A "force this off no matter what
+ * else is on the element" utility class is exactly what `!important` is
+ * for -- don't remove it to "clean up" the CSS without re-confirming no
+ * class combining `.hidden` with its own `display` regresses again.
+ */
+.hidden { display: none !important; }
 
 /* --------------------------------------------------------------- Connect */
 
@@ -320,22 +463,21 @@ button:hover:not(:disabled) {
   border: 1px solid var(--input-border);
   border-radius: 4px;
   box-sizing: border-box;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 10px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: background 0.1s ease, border-color 0.1s ease;
 }
-/*
- * A checkmark drawn as an actual SVG image rather than a rotated-border
- * pseudo-element -- the border-trick version rendered as a stray glyph
- * instead of a check in this webview (confirmed live), so this uses a
- * pixel-defined image instead of relying on this host's border/transform
- * rendering for something this small.
- */
+.checkbox-check {
+  opacity: 0;
+  pointer-events: none;
+}
 .checkbox input:checked + .checkbox-box {
   background-color: var(--accent);
   border-color: var(--accent);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5L6.5 11.5L12.5 4.5' fill='none' stroke='%2314150f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.checkbox input:checked + .checkbox-box .checkbox-check {
+  opacity: 1;
 }
 
 /* ------------------------------------------------------------ collision */
@@ -375,15 +517,6 @@ button:hover:not(:disabled) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.batch-tag {
-  flex-shrink: 0;
-  font-size: 10px;
-  line-height: 1;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  padding: 2px 6px;
-}
 .clip-status-label {
   font-size: 12px;
   color: var(--text-secondary);
@@ -398,17 +531,90 @@ button:hover:not(:disabled) {
   display: flex;
   margin-top: 8px;
 }
-.clip-card-actions button {
+.clip-card-actions .btn {
   margin: 0;
   padding: 5px 10px;
   font-size: 11.5px;
   margin-left: 6px;
 }
-.clip-card-actions button:first-child {
+.clip-card-actions .btn:first-child {
   margin-left: 0;
 }
 .clip-card-details {
   margin-top: 8px;
+}
+
+/*
+ * Combined progress across the whole pipeline -- see STAGE_PROGRESS in
+ * panel.js for what the width actually represents. One row per production
+ * (a solo job gets its own, a consolidated batch gets exactly one shared
+ * one -- see .batch-progress below -- never one per member card).
+ *
+ * `border-radius: 999px` + a `transition` on a rapidly-updating width
+ * (upload progress can tick many times a second) produced a bizarre
+ * scalloped shape bleeding across card boundaries in this webview
+ * (confirmed live). Kept deliberately plain to avoid it: a small fixed
+ * radius, explicit width on every box in the chain, no transition.
+ */
+.progress-row {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+}
+.progress-row > * {
+  margin-left: 8px;
+}
+.progress-row > *:first-child {
+  margin-left: 0;
+}
+.progress-bar {
+  flex: 1;
+  width: 100%;
+  height: 3px;
+  background: var(--input-bg);
+  border-radius: 3px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.progress-bar-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: var(--accent);
+}
+.progress-percent {
+  flex-shrink: 0;
+  min-width: 30px;
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+/* One shared row for an entire consolidated batch, rendered once above
+   its member cards -- replaces what used to be a "Batch" tag repeated on
+   every member card plus a separate identical progress bar on each one. */
+.batch-progress {
+  background: var(--bg-card-raised);
+  border: 1px solid var(--border-card);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+}
+.batch-progress-header {
+  font-size: 11.5px;
+}
+
+/* Collapsed by default (the shared .hidden utility handles that) --
+   expanded via the batch-progress-header disclosure above it. */
+.batch-members {
+  margin-top: 8px;
+}
+
+.past-productions-note {
+  font-size: 11px;
+  text-align: center;
+  padding: 4px 0 0;
 }
 
 .status-dot {
@@ -423,9 +629,9 @@ button:hover:not(:disabled) {
 .status-dot.dot-warn { background: var(--warn); }
 .status-dot.dot-dim { background: var(--dim); }
 
-/* Phase 4b/4c: cue for cards sharing one consolidated batch, carried over
-   from the old table's batch-row rule -- a left accent border plus, since
-   that alone read as too subtle, a small "Batch" tag next to the name. */
+/* Left accent border ties a member card back to the .batch-progress row
+   sitting above the group -- no separate per-card "Batch" tag needed once
+   that shared row already establishes the grouping. */
 .clip-card.batch-member {
   border-left: 3px solid var(--accent);
   background: var(--bg-card-raised);
@@ -442,6 +648,11 @@ button:hover:not(:disabled) {
   display: inline-flex;
   align-items: center;
   cursor: pointer;
+  user-select: none;
+}
+.disclosure-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .disclosure-toggle .chevron {
   margin-right: 6px;
@@ -464,10 +675,13 @@ button:hover:not(:disabled) {
   margin-top: 4px;
   padding: 4px 2px;
 }
-.advanced-section #advancedPanel {
-  margin-top: 10px;
+/* Was scoped to #advancedPanel only -- Past Productions' own panel shared
+   this markup pattern but never got this rule, which is why expanding it
+   left zero gap before its first card (confirmed live). */
+.advanced-section .disclosure-panel {
+  margin-top: 14px;
 }
-.advanced-section button {
+.advanced-section .btn {
   padding: 6px 12px;
   font-size: 11.5px;
 }
