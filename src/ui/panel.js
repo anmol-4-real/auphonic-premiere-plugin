@@ -32,7 +32,7 @@
   // Kept in sync with manifest.json's own "version" by hand -- bump both
   // together on every release (see RELEASING.md). Only used to stamp the
   // "Report a Bug" email below; nothing reads the manifest file at runtime.
-  const PLUGIN_VERSION = "1.0.0";
+  const PLUGIN_VERSION = "1.1.0";
   const BUG_REPORT_EMAIL = "anmolpreet@hackerrank.com";
 
   /*
